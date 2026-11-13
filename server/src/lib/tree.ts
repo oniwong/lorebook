@@ -4,7 +4,8 @@ import { alias } from 'drizzle-orm/pg-core';
 import { db, type Tx } from '../db/index.js';
 import { pages, spaces, users } from '../db/schema.js';
 import { badRequest, conflict, forbidden, notFound } from './errors.js';
-import { checkoutIsLive, lockPage } from './pages.js';
+import { canEditDirectly, checkoutIsLive, lockPage } from './pages.js';
+import { HttpError } from './errors.js';
 import type { SessionUser } from './auth.js';
 
 export const TRASH_RETENTION_DAYS = 30;
@@ -122,6 +123,12 @@ export async function trashPage(pageId: number, user: SessionUser): Promise<{ co
     await lockSpaces(tx, p.spaceId);
     const rows = await lockSubtree(tx, pageId);
     await assertNoForeignCheckouts(tx, rows, user, 'delete this page');
+    const locked = rows.filter((r) => !canEditDirectly(r, user));
+    if (locked.length) {
+      throw new HttpError(403, `Can't delete: ${locked.map((r) => `“${r.title}”`).join(', ')} ${locked.length === 1 ? 'is' : 'are'} locked by the owner`, {
+        code: 'locked', pages: locked.map((r) => ({ id: r.id, title: r.title })),
+      });
+    }
     const ids = rows.map((r) => r.id);
     // The deleting user's own check-outs are released; their drafts stay but are hidden while trashed.
     await tx.update(pages).set({

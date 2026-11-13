@@ -9,7 +9,7 @@ import { availableSearchLanguages, search } from '../lib/search.js';
 import { listStale, listTags, markReviewed, normalizeTag, setReviewDate, setTags } from '../lib/review.js';
 
 const csv = z.string().max(2000).optional().transform((v) => (v ? v.split(',').map((x) => x.trim()).filter(Boolean) : undefined));
-const flag = z.enum(['1', 'true', '0', 'false', '']).optional().transform((v) => v === '1' || v === 'true');
+export const flag = z.enum(['1', 'true', '0', 'false', '']).optional().transform((v) => v === '1' || v === 'true');
 const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD').optional().or(z.literal('').transform(() => undefined));
 
 export async function searchRoutes(app: FastifyInstance) {

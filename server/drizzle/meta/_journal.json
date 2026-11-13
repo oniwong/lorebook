@@ -22,6 +22,13 @@
       "when": 1794577817418,
       "tag": "0002_find_and_trust",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1794580376409,
+      "tag": "0003_collaboration",
+      "breakpoints": true
     }
   ]
 }

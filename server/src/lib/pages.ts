@@ -1,7 +1,7 @@
 import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { db, type Tx } from '../db/index.js';
-import { drafts, pages, revisions, spaces, templates, users } from '../db/schema.js';
+import { changeRequests, drafts, inboxItems, pages, revisions, spaces, templates, users } from '../db/schema.js';
 import { config } from '../config.js';
 import { HttpError, badRequest, conflict, forbidden, notFound } from './errors.js';
 import { checkRequiredSections } from './sections.js';
@@ -11,6 +11,7 @@ import { indexPage, REVIEW_DUE_DAYS } from './search.js';
 import { scanMarkdown, toStored } from './secretConfig.js';
 import type { SessionUser } from './auth.js';
 import type { SecretFinding } from './secrets.js';
+import { notify, resolveItems } from './inbox.js';
 
 type PageRow = typeof pages.$inferSelect;
 
@@ -30,7 +31,7 @@ export function checkoutIsLive(p: Pick<PageRow, 'checkedOutBy' | 'checkoutHeartb
  * (marked expired) so it shows up in their "My drafts".
  */
 export async function expireCheckouts(): Promise<number> {
-  const res = await db.execute<{ n: number }>(sql`
+  const res = await db.execute<{ id: number; user_id: number }>(sql`
     with expired as (
       select id, checked_out_by from pages
       where checked_out_by is not null
@@ -46,8 +47,20 @@ export async function expireCheckouts(): Promise<number> {
       from expired where pages.id = expired.id
       returning pages.id
     )
-    select count(*)::int as n from released`);
-  return res.rows[0]?.n ?? 0;
+    select released.id, expired.checked_out_by as user_id from released join expired on expired.id = released.id`);
+  await notify(db, res.rows.map((r) => ({ userId: r.user_id, kind: 'checkout_expired' as const, pageId: r.id })));
+  return res.rows.length;
+}
+
+/** Only the owner or an admin may edit a locked page directly (spec §6). */
+export function canEditDirectly(p: Pick<PageRow, 'locked' | 'ownerId'>, user: SessionUser): boolean {
+  return !p.locked || p.ownerId === user.id || user.role === 'admin';
+}
+
+export function assertCanEditDirectly(p: Pick<PageRow, 'locked' | 'ownerId'>, user: SessionUser): void {
+  if (!canEditDirectly(p, user)) {
+    throw new HttpError(403, 'This page is locked by its owner. Suggest a change instead.', { code: 'locked' });
+  }
 }
 
 export async function lockPage(tx: Tx, pageId: number): Promise<PageRow> {
@@ -56,7 +69,7 @@ export async function lockPage(tx: Tx, pageId: number): Promise<PageRow> {
   return p;
 }
 
-async function holderName(tx: Tx, userId: number): Promise<string> {
+async function holderName(tx: Tx | typeof db, userId: number): Promise<string> {
   const [u] = await tx.select({ displayName: users.displayName }).from(users).where(eq(users.id, userId));
   return u?.displayName ?? 'someone';
 }
@@ -76,12 +89,14 @@ export async function checkedOutConflict(tx: Tx, p: PageRow) {
 async function ensureHeldBy(tx: Tx, p: PageRow, user: SessionUser): Promise<PageRow> {
   const live = checkoutIsLive(p);
   if (live && p.checkedOutBy !== user.id) throw await checkedOutConflict(tx, p);
+  assertCanEditDirectly(p, user);
   const now = new Date();
   const fresh = !live || p.checkedOutBy !== user.id;
   if (fresh && p.checkedOutBy !== null && p.checkedOutBy !== user.id) {
     // Took over an expired check-out: keep the previous holder's draft for them.
     await tx.update(drafts).set({ status: 'expired' })
       .where(and(eq(drafts.pageId, p.id), eq(drafts.userId, p.checkedOutBy)));
+    await notify(tx, [{ userId: p.checkedOutBy, kind: 'checkout_expired', pageId: p.id, actorId: user.id }]);
   }
   const [updated] = await tx.update(pages).set({
     checkedOutBy: user.id,
@@ -234,6 +249,7 @@ export async function checkin(
       }).where(eq(pages.id, pageId));
       await syncLinks(tx, pageId, input.body);
       await indexPage(tx, pageId);
+      await notifyOutdated(tx, pageId, user.id);
     }
     if (input.markReviewed && (p.ownerId === user.id || user.role === 'admin')) {
       await tx.execute(sql`
@@ -242,6 +258,7 @@ export async function checkin(
             (select review_interval_months from templates where key = pages.template),
             coalesce((select (value #>> '{}')::int from settings where key = 'defaultReviewMonths'), 12))))::date end
         where id = ${pageId}`);
+      await resolveReviewItems(tx, pageId);
     }
     await tx.update(pages).set({ checkedOutBy: null, checkedOutAt: null, checkoutHeartbeatAt: null })
       .where(eq(pages.id, pageId));
@@ -272,6 +289,7 @@ export async function breakCheckout(pageId: number, admin: SessionUser): Promise
       .where(and(eq(drafts.pageId, pageId), eq(drafts.userId, p.checkedOutBy)));
     await tx.update(pages).set({ checkedOutBy: null, checkedOutAt: null, checkoutHeartbeatAt: null })
       .where(eq(pages.id, pageId));
+    await notify(tx, [{ userId: p.checkedOutBy, kind: 'checkout_broken', pageId, actorId: admin.id }]);
     return { previousHolder: p.checkedOutBy };
   });
 }
@@ -280,6 +298,7 @@ export async function restoreRevision(pageId: number, revisionId: number, user: 
   return db.transaction(async (tx) => {
     const p = await lockPage(tx, pageId);
     if (checkoutIsLive(p)) throw await checkedOutConflict(tx, p);
+    assertCanEditDirectly(p, user);
     const [rev] = await tx.select().from(revisions).where(and(eq(revisions.id, revisionId), eq(revisions.pageId, pageId)));
     if (!rev) throw notFound('Revision not found');
     if (rev.id === p.currentRevisionId) throw badRequest('That revision is already the current version');
@@ -296,6 +315,7 @@ export async function restoreRevision(pageId: number, revisionId: number, user: 
     }).where(eq(pages.id, pageId));
     await syncLinks(tx, pageId, rev.body);
     await indexPage(tx, pageId);
+    await notifyOutdated(tx, pageId, user.id);
     return { revisionId: created.id };
   });
 }
@@ -384,6 +404,13 @@ export async function getPage(pageId: number, viewer: SessionUser) {
     select id, title, slug from up order by depth desc`);
   const [myDraft] = await db.select({ updatedAt: drafts.updatedAt, status: drafts.status }).from(drafts)
     .where(and(eq(drafts.pageId, pageId), eq(drafts.userId, viewer.id)));
+  const [crs] = await db.select({
+    open: sql<number>`count(*) filter (where ${changeRequests.status} in ('open', 'changes_requested'))::int`,
+    mine: sql<number | null>`max(${changeRequests.id}) filter (where ${changeRequests.authorId} = ${viewer.id}
+      and ${changeRequests.status} in ('draft', 'open', 'changes_requested'))`,
+  }).from(changeRequests).where(eq(changeRequests.pageId, pageId));
+  let lockedByName: string | null = null;
+  if (p.lockedBy) lockedByName = await holderName(db, p.lockedBy);
   const live = checkoutIsLive(p);
   return {
     id: p.id,
@@ -405,6 +432,11 @@ export async function getPage(pageId: number, viewer: SessionUser) {
       ? { userId: p.checkedOutBy!, displayName: row.holderName!, since: p.checkedOutAt!, mine: p.checkedOutBy === viewer.id }
       : null,
     myDraft: myDraft ?? null,
+    locked: p.locked,
+    lock: p.locked ? { at: p.lockedAt, by: p.lockedBy ? { id: p.lockedBy, displayName: lockedByName ?? '' } : null } : null,
+    /** Whether the viewer may check the page out (false for others on a locked page). */
+    canEdit: canEditDirectly(p, viewer),
+    changeRequests: { open: crs?.open ?? 0, mineId: crs?.mine ?? null },
     breadcrumbs: crumbs.rows,
     tags: p.tags,
     review: {
@@ -425,6 +457,9 @@ export async function listRevisions(pageId: number) {
       restoredFrom: revisions.restoredFrom, createdAt: revisions.createdAt,
       author: { id: users.id, displayName: users.displayName },
       secretFindings: revisions.secretFindings, secretsAcknowledged: revisions.secretsAcknowledged,
+      changeRequestId: revisions.changeRequestId,
+      approvedBy: sql<{ id: number; displayName: string } | null>`(select json_build_object('id', a.id, 'displayName', a.display_name)
+        from users a where a.id = ${revisions.approvedBy})`,
     })
     .from(revisions)
     .innerJoin(users, eq(users.id, revisions.authorId))
@@ -432,7 +467,7 @@ export async function listRevisions(pageId: number) {
     .orderBy(desc(revisions.id));
 }
 
-async function requiredSectionsFor(tx: Tx, templateKey: string): Promise<string[]> {
+export async function requiredSectionsFor(tx: Tx, templateKey: string): Promise<string[]> {
   const [t] = await tx.select({ required: templates.requiredSections }).from(templates).where(eq(templates.key, templateKey));
   return t?.required ?? [];
 }
@@ -465,5 +500,72 @@ export async function purgeRevision(pageId: number, revisionId: number, admin: S
       throw badRequest('This is the current version. Edit the page to remove the content first, then purge this revision.');
     }
     await tx.delete(revisions).where(eq(revisions.id, revisionId));
+  });
+}
+
+/**
+ * After a page gets a new revision, tells the authors of submitted change requests based on an older one
+ * that their request is now outdated. Once per request and base revision.
+ */
+export async function notifyOutdated(tx: Tx, pageId: number, actorId: number): Promise<void> {
+  await tx.execute(sql`
+    insert into inbox_items (user_id, kind, page_id, change_request_id, actor_id, dedupe_key)
+    select cr.author_id, 'cr_outdated', cr.page_id, cr.id, ${actorId}, 'cr_outdated:' || cr.id || ':' || cr.base_revision_id
+    from change_requests cr join pages p on p.id = cr.page_id
+    where cr.page_id = ${pageId} and cr.status in ('open', 'changes_requested')
+      and cr.base_revision_id <> p.current_revision_id and cr.author_id <> ${actorId}
+    on conflict do nothing`);
+}
+
+/** Review reminders for a page are done once it has been reviewed. */
+export async function resolveReviewItems(tx: Tx, pageId: number): Promise<void> {
+  await resolveItems(tx, and(eq(inboxItems.pageId, pageId), sql`${inboxItems.kind} in ('review_due', 'review_overdue')`));
+}
+
+/** The owner or an admin locks or unlocks a page (spec §6). */
+export async function setLocked(pageId: number, user: SessionUser, locked: boolean): Promise<{ locked: boolean }> {
+  return db.transaction(async (tx) => {
+    const p = await lockPage(tx, pageId);
+    if (p.ownerId !== user.id && user.role !== 'admin') throw forbidden('Only the page owner or an admin can lock or unlock it');
+    if (p.locked === locked) return { locked };
+    // Locking would strand someone else's open edit, so they check in first (or an admin breaks it).
+    if (locked && checkoutIsLive(p) && p.checkedOutBy !== user.id && p.checkedOutBy !== p.ownerId) {
+      throw await checkedOutConflict(tx, p);
+    }
+    await tx.update(pages).set({ locked, lockedAt: locked ? new Date() : null, lockedBy: locked ? user.id : null })
+      .where(eq(pages.id, pageId));
+    await notify(tx, [{ userId: p.ownerId, kind: locked ? 'page_locked' : 'page_unlocked', pageId, actorId: user.id }]);
+    return { locked };
+  });
+}
+
+/** Admins hand a page to a new owner, e.g. when the owner has left (spec §6, §15). */
+export async function reassignOwner(pageIds: number[], admin: SessionUser, newOwnerId: number): Promise<{ count: number }> {
+  if (admin.role !== 'admin') throw forbidden('Admins only');
+  return db.transaction(async (tx) => {
+    const [u] = await tx.select({ id: users.id, active: users.active }).from(users).where(eq(users.id, newOwnerId));
+    if (!u) throw notFound('User not found');
+    if (!u.active) throw badRequest('The new owner must be an active user');
+    let count = 0;
+    for (const id of [...new Set(pageIds)].sort((a, b) => a - b)) {
+      const p = await lockPage(tx, id);
+      if (p.ownerId === newOwnerId) continue;
+      await tx.update(pages).set({ ownerId: newOwnerId }).where(eq(pages.id, id));
+      await notify(tx, [
+        { userId: newOwnerId, kind: 'owner_assigned', pageId: id, actorId: admin.id },
+        { userId: p.ownerId, kind: 'owner_removed', pageId: id, actorId: admin.id },
+      ]);
+      // The admins' "needs an owner" items, and the old owner's review reminders, are settled.
+      await resolveItems(tx, and(eq(inboxItems.pageId, id), sql`${inboxItems.kind} in ('former_owner', 'review_due', 'review_overdue')`));
+      // Pending change requests now wait on the new owner.
+      const pending = await tx.select({ id: changeRequests.id, authorId: changeRequests.authorId }).from(changeRequests)
+        .where(and(eq(changeRequests.pageId, id), eq(changeRequests.status, 'open')));
+      await notify(tx, pending.map((cr) => ({
+        userId: newOwnerId, kind: 'cr_submitted' as const, pageId: id, changeRequestId: cr.id, actorId: cr.authorId,
+        dedupeKey: `cr_submitted:${cr.id}:${newOwnerId}`,
+      })));
+      count++;
+    }
+    return { count };
   });
 }

@@ -3,7 +3,7 @@ import { eq, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { pages, templates } from '../db/schema.js';
 import { badRequest, forbidden } from './errors.js';
-import { checkedOutConflict, checkoutIsLive, lockPage } from './pages.js';
+import { checkedOutConflict, checkoutIsLive, lockPage, resolveReviewItems } from './pages.js';
 import { getAppSettings } from './settings.js';
 import { indexPage, REVIEW_DUE_DAYS, reviewCondition } from './search.js';
 import type { SessionUser } from './auth.js';
@@ -92,6 +92,7 @@ export async function markReviewed(pageId: number, user: SessionUser, nextReview
     if (nextReviewBy !== undefined) next = nextReviewBy === null ? null : checkDate(nextReviewBy);
     else next = p.reviewBy === null ? null : initialReviewBy(await reviewIntervalFor(p.template));
     await tx.update(pages).set({ reviewBy: next, reviewedAt: new Date(), reviewedBy: user.id }).where(eq(pages.id, pageId));
+    await resolveReviewItems(tx, pageId);
     const [row] = await tx.select({ reviewBy: pages.reviewBy }).from(pages).where(eq(pages.id, pageId));
     return { reviewBy: row.reviewBy };
   });

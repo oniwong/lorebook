@@ -62,6 +62,10 @@ export const pages = pgTable('pages', {
   // The page the user actually deleted; its whole subtree shares this id and is restored together.
   trashRootId: integer('trash_root_id'),
   tags: text('tags').array().notNull().default(sql`'{}'::text[]`),
+  // Locked pages (spec §6): only the owner or an admin may edit directly; everyone else suggests changes.
+  locked: boolean('locked').notNull().default(false),
+  lockedAt: timestamp('locked_at', { withTimezone: true }),
+  lockedBy: integer('locked_by').references(() => users.id),
   // Review dates (spec §11). review_by is a calendar date; null means the page is never due.
   reviewBy: date('review_by'),
   reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
@@ -94,9 +98,12 @@ export const revisions = pgTable('revisions', {
   title: text('title').notNull(),
   body: text('body').notNull(),
   authorId: integer('author_id').notNull().references(() => users.id),
-  kind: text('kind', { enum: ['create', 'checkin', 'restore'] }).notNull(),
+  kind: text('kind', { enum: ['create', 'checkin', 'restore', 'change_request'] }).notNull(),
   message: text('message').notNull().default(''),
   restoredFrom: integer('restored_from'),
+  // Set on revisions applied from an approved change request: the author is the requester.
+  changeRequestId: integer('change_request_id'),
+  approvedBy: integer('approved_by').references(() => users.id),
   // Possible secrets found when the revision was written; empty or null when clean.
   secretFindings: jsonb('secret_findings').$type<StoredFinding[]>(),
   // The author saw the secret warning and chose "Save anyway".
@@ -167,3 +174,69 @@ export const settings = pgTable('settings', {
   value: jsonb('value').notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+export const CR_STATUSES = ['draft', 'open', 'changes_requested', 'approved', 'rejected', 'withdrawn'] as const;
+export type ChangeRequestStatus = typeof CR_STATUSES[number];
+
+/**
+ * A suggested edit to a page (spec §6): a private copy of the page, based on one revision, that the owner
+ * reviews as a diff and approves, rejects or sends back. "Outdated" is derived: base revision ≠ page's current one.
+ */
+export const changeRequests = pgTable('change_requests', {
+  id: serial('id').primaryKey(),
+  pageId: integer('page_id').notNull().references(() => pages.id, { onDelete: 'cascade' }),
+  authorId: integer('author_id').notNull().references(() => users.id),
+  status: text('status', { enum: CR_STATUSES }).notNull().default('draft'),
+  title: text('title').notNull(),
+  body: text('body').notNull(),
+  description: text('description').notNull().default(''),
+  baseRevisionId: integer('base_revision_id').notNull(),
+  // Bumped on every content change, so a reviewer only approves the version they looked at.
+  version: integer('version').notNull().default(1),
+  secretFindings: jsonb('secret_findings').$type<StoredFinding[]>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  submittedAt: timestamp('submitted_at', { withTimezone: true }),
+  decidedAt: timestamp('decided_at', { withTimezone: true }),
+  decidedBy: integer('decided_by').references(() => users.id),
+  appliedRevisionId: integer('applied_revision_id'),
+}, (t) => [
+  index('change_requests_page_idx').on(t.pageId, t.status),
+  index('change_requests_author_idx').on(t.authorId, t.status),
+  // One unfinished request per person per page: "Suggest change" resumes it.
+  uniqueIndex('change_requests_one_active_idx').on(t.pageId, t.authorId)
+    .where(sql`status in ('draft', 'open', 'changes_requested')`),
+]);
+
+/** The conversation and decisions on a change request, oldest first. */
+export const changeRequestEvents = pgTable('change_request_events', {
+  id: serial('id').primaryKey(),
+  changeRequestId: integer('change_request_id').notNull().references(() => changeRequests.id, { onDelete: 'cascade' }),
+  actorId: integer('actor_id').notNull().references(() => users.id),
+  kind: text('kind', {
+    enum: ['submitted', 'resubmitted', 'comment', 'changes_requested', 'approved', 'rejected', 'withdrawn', 'updated_to_latest'],
+  }).notNull(),
+  body: text('body').notNull().default(''),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index('change_request_events_cr_idx').on(t.changeRequestId, t.id)]);
+
+/**
+ * The in-app inbox (spec §6). One row per notification for one user. `dedupeKey` stops the periodic sweep
+ * (review dates, former-user pages) from adding the same item twice.
+ */
+export const inboxItems = pgTable('inbox_items', {
+  id: serial('id').primaryKey(),
+  userId: integer('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  kind: text('kind').notNull(),
+  pageId: integer('page_id').references(() => pages.id, { onDelete: 'cascade' }),
+  changeRequestId: integer('change_request_id').references(() => changeRequests.id, { onDelete: 'cascade' }),
+  actorId: integer('actor_id').references(() => users.id),
+  text: text('text').notNull().default(''),
+  dedupeKey: text('dedupe_key'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  readAt: timestamp('read_at', { withTimezone: true }),
+}, (t) => [
+  index('inbox_items_user_idx').on(t.userId, t.id),
+  index('inbox_items_unread_idx').on(t.userId).where(sql`read_at is null`),
+  uniqueIndex('inbox_items_dedupe_idx').on(t.userId, t.dedupeKey),
+]);

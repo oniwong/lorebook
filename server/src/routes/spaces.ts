@@ -77,7 +77,7 @@ export async function spaceRoutes(app: FastifyInstance) {
     const s = await getSpaceByKey(key);
     const rows = await db
       .select({
-        id: pages.id, parentId: pages.parentId, position: pages.position, title: pages.title, slug: pages.slug,
+        id: pages.id, parentId: pages.parentId, position: pages.position, title: pages.title, slug: pages.slug, locked: pages.locked,
         checkedOutBy: pages.checkedOutBy, checkoutHeartbeatAt: pages.checkoutHeartbeatAt,
       })
       .from(pages)
