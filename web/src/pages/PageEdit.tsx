@@ -8,6 +8,8 @@ import { MarkdownEditor } from '../components/MarkdownEditor';
 import { MarkdownView } from '../components/MarkdownView';
 import { ErrorBox } from '../components/ErrorBox';
 import { Modal } from '../components/Modal';
+import { SecretFindings } from '../components/SecretFindings';
+import type { SecretFinding, SecretScanConfig } from '../lib/secrets';
 
 const AUTOSAVE_MS = 4_000;
 const HEARTBEAT_MS = 60_000;
@@ -34,6 +36,12 @@ export function PageEdit() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const pageQ = useQuery({ queryKey: ['page', pageId], queryFn: () => api.get<Page>(`/pages/${pageId}`) });
+  const rulesQ = useQuery({
+    queryKey: ['secret-rules'],
+    queryFn: () => api.get<{ config: SecretScanConfig }>('/secret-rules'),
+    staleTime: 5 * 60_000,
+  });
+  const [secretFindings, setSecretFindings] = useState<SecretFinding[]>([]);
 
   const [status, setStatus] = useState<Status>({ kind: 'loading' });
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -47,6 +55,7 @@ export function PageEdit() {
   const [checkinOpen, setCheckinOpen] = useState(false);
   const [editorKey, setEditorKey] = useState(0);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadWarning, setUploadWarning] = useState<string | null>(null);
 
   const current = useRef({ title: '', body: '' });
   const saved = useRef({ title: '', body: '' });
@@ -219,6 +228,9 @@ export function PageEdit() {
     lastActivity.current = Date.now();
     const a = await uploadAttachment(pageId, file, onProgress);
     void qc.invalidateQueries({ queryKey: ['attachments', pageId] });
+    if (a.warnings?.length) {
+      setUploadWarning(`${a.filename} looks like it contains a password or key (line ${a.warnings.map((w) => w.line).slice(0, 5).join(', ')}). Consider removing it and linking to the vault entry.`);
+    }
     return a;
   }, [pageId, qc]);
 
@@ -261,6 +273,11 @@ export function PageEdit() {
             <button key={m} className={mode === m ? 'on' : ''} onClick={() => changeMode(m)}>{m[0].toUpperCase() + m.slice(1)}</button>
           ))}
         </div>
+        {secretFindings.length > 0 && (
+          <span className="secret-count" title={secretFindings.map((f) => `Line ${f.line}: ${f.ruleName}`).join('\n')}>
+            ⚠ {secretFindings.length === 1 ? '1 possible secret' : `${secretFindings.length} possible secrets`}
+          </span>
+        )}
         <span className="save-state muted small" aria-live="polite">
           {saveError ? <span className="text-danger">Autosave failed: {saveError}</span>
             : savedAt ? `Draft saved ${formatTime(savedAt)}` : 'Checked out'}
@@ -287,6 +304,9 @@ export function PageEdit() {
         </div>
       )}
 
+      {uploadWarning && (
+        <div className="banner warn">{uploadWarning} <button className="link-btn" onClick={() => setUploadWarning(null)}>Dismiss</button></div>
+      )}
       {uploadError && (
         <div className="banner danger">Upload failed: {uploadError} <button className="link-btn" onClick={() => setUploadError(null)}>Dismiss</button></div>
       )}
@@ -314,6 +334,8 @@ export function PageEdit() {
               upload={upload}
               onUploadError={setUploadError}
               searchPages={searchPages}
+              secretConfig={rulesQ.data?.config ?? null}
+              onSecretFindings={setSecretFindings}
             />
           )}
         </div>
@@ -329,6 +351,7 @@ export function PageEdit() {
         <CheckinDialog
           page={page}
           canChangeTemplate={!!page && (page.owner.id === user.id || user.role === 'admin')}
+          canReview={!!page && !!page.review.reviewBy && (page.owner.id === user.id || user.role === 'admin')}
           pageId={pageId}
           title={title}
           body={body}
@@ -350,8 +373,8 @@ export function PageEdit() {
   );
 }
 
-function CheckinDialog({ page, canChangeTemplate, pageId, title, body, stale, onClose, onDone }: {
-  page: Page | undefined; canChangeTemplate: boolean;
+function CheckinDialog({ page, canChangeTemplate, canReview, pageId, title, body, stale, onClose, onDone }: {
+  page: Page | undefined; canChangeTemplate: boolean; canReview: boolean;
   pageId: number; title: string; body: string; stale: boolean; onClose: () => void; onDone: () => Promise<void>;
 }) {
   const [message, setMessage] = useState('');
@@ -359,20 +382,44 @@ function CheckinDialog({ page, canChangeTemplate, pageId, title, body, stale, on
   const [confirmOverwrite, setConfirmOverwrite] = useState(stale);
   const [sections, setSections] = useState<{ missing: string[]; empty: string[] } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [secrets, setSecrets] = useState<SecretFinding[] | null>(null);
+  const [markReviewed, setMarkReviewed] = useState(page?.review.status === 'overdue');
 
-  const submit = async (overwriteNewer: boolean) => {
+  const submit = async (overwriteNewer: boolean, secretsAcknowledged = false) => {
     setBusy(true);
     setError(null);
     try {
-      await api.post(`/pages/${pageId}/checkin`, { title, body, message, overwriteNewer });
+      await api.post(`/pages/${pageId}/checkin`, {
+        title, body, message, overwriteNewer, secretsAcknowledged, markReviewed: canReview && markReviewed,
+      });
       await onDone();
     } catch (e) {
       if (e instanceof ApiError && e.code === 'stale_draft') setConfirmOverwrite(true);
       else if (e instanceof ApiError && e.code === 'missing_sections') setSections({ missing: e.details.missing, empty: e.details.empty });
+      else if (e instanceof ApiError && e.code === 'possible_secrets') setSecrets(e.details.findings);
       else setError(e);
       setBusy(false);
     }
   };
+
+  if (secrets) {
+    return (
+      <Modal title="Possible secrets" onClose={onClose} wide>
+        <div className="form">
+          <p>This looks like it contains {secrets.length === 1 ? 'a password or key' : `${secrets.length} passwords or keys`}. Anyone who can read Lorebook will see it, and it stays in the page history.</p>
+          <SecretFindings findings={secrets} />
+          <p className="muted small">
+            Better: store it in the password vault and link to the entry. For a false alarm, add <code>{'<!-- lorebook:ignore-secret -->'}</code> at the end of the line.
+          </p>
+          {error != null && <ErrorBox error={error} />}
+          <div className="form-actions">
+            <button type="button" disabled={busy} onClick={() => void submit(confirmOverwrite, true)}>Save anyway</button>
+            <button type="button" className="primary" onClick={onClose}>Go back and fix it</button>
+          </div>
+        </div>
+      </Modal>
+    );
+  }
 
   const switchToBlank = async () => {
     if (!confirm(`Switch this page from the ${page?.templateInfo.name ?? ''} template to Blank? Its sections will no longer be required.`)) return;
@@ -414,6 +461,12 @@ function CheckinDialog({ page, canChangeTemplate, pageId, title, body, stale, on
           What changed? <span className="muted">(optional)</span>
           <input autoFocus value={message} maxLength={500} onChange={(e) => setMessage(e.target.value)} placeholder="e.g. Added rollback steps" />
         </label>
+        {canReview && (
+          <label className="check">
+            <input type="checkbox" checked={markReviewed} onChange={(e) => setMarkReviewed(e.target.checked)} />
+            Also mark the page as reviewed{page?.review.status === 'overdue' ? ' (it is overdue)' : ''}
+          </label>
+        )}
         {confirmOverwrite && (
           <div className="banner warn">Someone changed this page after you started. Checking in replaces their version (it stays in History).</div>
         )}

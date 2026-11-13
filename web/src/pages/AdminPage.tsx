@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, formatDateTime, type AppSettings, type Space } from '../lib/api';
 import { TemplatesAdmin } from './AdminTemplates';
 import { TrashAdmin } from './AdminTrash';
+import { SecretRulesAdmin, SecretsReport } from './AdminSecrets';
 import { useUser } from '../lib/session';
 import { ErrorBox } from '../components/ErrorBox';
 import { Modal } from '../components/Modal';
@@ -20,6 +21,8 @@ export function AdminPage() {
       <UsersAdmin />
       <TemplatesAdmin />
       <TrashAdmin />
+      <SecretsReport />
+      <SecretRulesAdmin />
       <SettingsAdmin />
     </div>
   );
@@ -205,18 +208,26 @@ function ResetPassword({ user, onClose }: { user: AdminUser; onClose: () => void
 function SettingsAdmin() {
   const qc = useQueryClient();
   const settings = useQuery({ queryKey: ['settings'], queryFn: () => api.get<AppSettings>('/settings') });
+  const languages = useQuery({ queryKey: ['search-languages'], queryFn: () => api.get<string[]>('/search/languages') });
   const [cap, setCap] = useState<string | null>(null);
+  const [language, setLanguage] = useState<string | null>(null);
+  const [months, setMonths] = useState<string | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [saved, setSaved] = useState(false);
   const value = cap ?? (settings.data?.uploadMaxMb?.toString() ?? '');
+  const lang = language ?? settings.data?.searchLanguage ?? 'simple';
+  const reviewMonths = months ?? String(settings.data?.defaultReviewMonths ?? 12);
 
   const save = async (e: FormEvent) => {
     e.preventDefault();
     setError(null);
     try {
-      await api.patch('/settings', { uploadMaxMb: value ? Number(value) : null });
+      if (lang !== settings.data?.searchLanguage && !confirm(`Switch search to "${lang}"? Every page is re-indexed in the background, which takes a minute or two.`)) return;
+      await api.patch('/settings', { uploadMaxMb: value ? Number(value) : null, searchLanguage: lang, defaultReviewMonths: Number(reviewMonths) });
       await qc.invalidateQueries({ queryKey: ['settings'] });
       setCap(null);
+      setLanguage(null);
+      setMonths(null);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (err) {
@@ -232,9 +243,23 @@ function SettingsAdmin() {
           Upload limit per file (MB)
           <input type="number" min={1} value={value} placeholder="No limit" onChange={(e) => setCap(e.target.value)} />
         </label>
+        <label>
+          Search language
+          <select value={lang} onChange={(e) => setLanguage(e.target.value)}>
+            {(languages.data ?? [lang]).map((l) => <option key={l} value={l}>{l}</option>)}
+          </select>
+        </label>
+        <label>
+          Default review interval (months)
+          <input type="number" min={1} max={120} value={reviewMonths} onChange={(e) => setMonths(e.target.value)} required />
+        </label>
         <button className="primary" type="submit">{saved ? 'Saved' : 'Save'}</button>
       </form>
-      <p className="muted small">Leave empty for no limit. The <code>/readyz</code> health check reports when free disk space runs low.</p>
+      <p className="muted small">
+        Upload limit: leave empty for no limit. The <code>/readyz</code> health check reports when free disk space runs low.
+        Search language: <code>simple</code> matches words exactly and suits mixed English and Swedish; <code>english</code> or <code>swedish</code> also match word forms (“restarting” finds “restart”) when one language dominates.
+        Default review interval: used when a page is marked reviewed and its template sets no interval.
+      </p>
       {error != null && <ErrorBox error={error} />}
     </section>
   );

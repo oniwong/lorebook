@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link, Outlet, useMatch } from 'react-router-dom';
+import { Link, Outlet, useMatch, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { api, type Page } from '../lib/api';
 import { useSession, useUser } from '../lib/session';
@@ -12,6 +12,9 @@ export function Layout() {
   const [switcher, setSwitcher] = useState(false);
   const [menu, setMenu] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const navigate = useNavigate();
+  const onSearchPage = useMatch('/search');
   const spaceMatch = useMatch('/s/:key/*');
   const pageMatch = useMatch('/s/:key/p/:id/*');
   // Pages outside /s/... (e.g. History) still show their Space's tree.
@@ -41,7 +44,16 @@ export function Layout() {
       <header className="topbar">
         <button className="icon-btn nav-toggle" aria-label="Toggle navigation" onClick={() => setNavOpen((v) => !v)}>☰</button>
         <Link to="/" className="brand">Lorebook</Link>
-        <button className="switcher-btn" onClick={() => setSwitcher(true)}>
+        {!onSearchPage && (
+          <form className="top-search" role="search" onSubmit={(e) => {
+            e.preventDefault();
+            navigate(query.trim() ? `/search?q=${encodeURIComponent(query.trim())}` : '/search');
+            setQuery('');
+          }}>
+            <input type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search…" aria-label="Search all pages" />
+          </form>
+        )}
+        <button className="switcher-btn" onClick={() => setSwitcher(true)} title="Jump to a page by title">
           <span>Jump to page…</span>
           <kbd>Ctrl K</kbd>
         </button>

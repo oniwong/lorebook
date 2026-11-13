@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { api, pagePath, timeAgo, type Space } from '../lib/api';
+import { api, formatDay, pagePath, timeAgo, type Space, type StaleRow } from '../lib/api';
+import { ReviewBadge } from '../components/ReviewBadge';
 import { useUser } from '../lib/session';
 import { DraftList } from '../components/DraftList';
 
@@ -10,6 +11,7 @@ export function HomePage() {
   const user = useUser();
   const recent = useQuery({ queryKey: ['recent'], queryFn: () => api.get<Recent[]>('/pages/recent?limit=15') });
   const spaces = useQuery({ queryKey: ['spaces'], queryFn: () => api.get<Space[]>('/spaces') });
+  const stale = useQuery({ queryKey: ['stale', `mine-${user.id}`], queryFn: () => api.get<StaleRow[]>(`/stale?owner=${user.id}&includeDue=1`) });
 
   return (
     <div className="content home">
@@ -37,6 +39,19 @@ export function HomePage() {
         <section className="card">
           <h2>My drafts</h2>
           <DraftList />
+        </section>
+        <section className="card">
+          <h2>My pages to review</h2>
+          <ul className="plain-list">
+            {stale.data?.slice(0, 10).map((p) => (
+              <li key={p.id}>
+                <Link to={pagePath(p)}>{p.title}</Link>
+                <span className="muted small"> · {p.spaceName} · by {formatDay(p.reviewBy)}</span> <ReviewBadge status={p.status} reviewBy={p.status === 'overdue' ? p.reviewBy : null} />
+              </li>
+            ))}
+            {stale.data?.length === 0 && <li className="muted">Nothing due. Your pages are up to date.</li>}
+          </ul>
+          {stale.data && stale.data.length > 10 && <Link className="small" to={`/stale?owner=${user.id}&includeDue=1`}>All {stale.data.length} →</Link>}
         </section>
         <section className="card">
           <h2>Spaces</h2>

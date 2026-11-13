@@ -24,10 +24,12 @@ export function QuickSwitcher({ onClose }: { onClose: () => void }) {
 
   useEffect(() => setSel(0), [data]);
 
-  const go = (h: Hit | undefined) => {
-    if (!h) return;
+  // The last row searches all content for the typed text.
+  const rows = q.trim() ? data.length + 1 : data.length;
+  const go = (i: number) => {
     onClose();
-    navigate(pagePath(h));
+    if (i === data.length && q.trim()) navigate(`/search?q=${encodeURIComponent(q.trim())}`);
+    else if (data[i]) navigate(pagePath(data[i]));
   };
 
   return (
@@ -40,19 +42,25 @@ export function QuickSwitcher({ onClose }: { onClose: () => void }) {
           onChange={(e) => setQ(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Escape') onClose();
-            else if (e.key === 'ArrowDown') { e.preventDefault(); setSel((s) => Math.min(s + 1, data.length - 1)); }
+            else if (e.key === 'ArrowDown') { e.preventDefault(); setSel((s) => Math.min(s + 1, rows - 1)); }
             else if (e.key === 'ArrowUp') { e.preventDefault(); setSel((s) => Math.max(s - 1, 0)); }
-            else if (e.key === 'Enter') go(data[sel]);
+            else if (e.key === 'Enter') go(sel);
           }}
         />
         <ul>
           {data.map((h, i) => (
-            <li key={h.id} className={i === sel ? 'sel' : ''} onMouseEnter={() => setSel(i)} onClick={() => go(h)}>
+            <li key={h.id} className={i === sel ? 'sel' : ''} onMouseEnter={() => setSel(i)} onClick={() => go(i)}>
               <span className="title">{h.title}</span>
               <span className="muted">{h.spaceName}</span>
             </li>
           ))}
-          {data.length === 0 && <li className="muted empty">No pages found</li>}
+          {data.length === 0 && !q.trim() && <li className="muted empty">No pages found</li>}
+          {q.trim() && (
+            <li className={`search-all${sel === data.length ? ' sel' : ''}`} onMouseEnter={() => setSel(data.length)} onClick={() => go(data.length)}>
+              <span>Search all pages for “{q.trim()}”</span>
+              <span className="muted">Enter</span>
+            </li>
+          )}
         </ul>
       </div>
     </div>

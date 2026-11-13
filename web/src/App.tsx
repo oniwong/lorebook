@@ -12,6 +12,8 @@ import { HistoryPage } from './pages/HistoryPage';
 import { AdminPage } from './pages/AdminPage';
 import { AccountPage } from './pages/AccountPage';
 import { ErrorBox } from './components/ErrorBox';
+import { SearchPage } from './pages/SearchPage';
+import { StalePage } from './pages/StalePage';
 
 /** Short internal links (/p/123) redirect to the page's canonical URL. */
 function ShortLink() {
@@ -44,6 +46,8 @@ export function App() {
         <Route path="/s/:key/p/:id/:slug?" element={<PageView />} />
         <Route path="/admin" element={user.role === 'admin' ? <AdminPage /> : <Navigate to="/" replace />} />
         <Route path="/account" element={<AccountPage />} />
+        <Route path="/search" element={<SearchPage />} />
+        <Route path="/stale" element={<StalePage />} />
         <Route path="*" element={<ErrorBox error={new Error('Page not found')} />} />
       </Route>
     </Routes>
