@@ -8,8 +8,9 @@ import { notFound } from '../lib/errors.js';
 import { idParam, parse } from '../lib/validate.js';
 import {
   TITLE_MAX, breakCheckout, checkin, checkout, createPage, discard, getPage, heartbeat, listRevisions,
-  restoreRevision, saveDraft, setPageTemplate,
+  purgeRevision, restoreRevision, saveDraft, setPageTemplate,
 } from '../lib/pages.js';
+import { normalizeTags } from '../lib/review.js';
 import { movePage, subtreeCount, trashPage } from '../lib/tree.js';
 import { getSpaceByKey } from './spaces.js';
 
@@ -25,9 +26,13 @@ export async function pageRoutes(app: FastifyInstance) {
       title: z.string().max(TITLE_MAX),
       body: z.string().max(BODY_MAX).optional(),
       template: z.string().max(40).optional(),
+      tags: z.array(z.string().max(100)).max(50).optional(),
     }), req.body);
     const space = await getSpaceByKey(body.spaceKey);
-    return createPage(user, { spaceId: space.id, parentId: body.parentId, title: body.title, body: body.body, template: body.template });
+    return createPage(user, {
+      spaceId: space.id, parentId: body.parentId, title: body.title, body: body.body, template: body.template,
+      tags: body.tags ? normalizeTags(body.tags) : undefined,
+    });
   });
 
   app.get('/pages/recent', async (req) => {
@@ -46,19 +51,27 @@ export async function pageRoutes(app: FastifyInstance) {
       .limit(limit);
   });
 
-  /** Title lookup for the Ctrl+K quick switcher. */
+  /**
+   * Title lookup for the Ctrl+K quick switcher: substring matches first (exact, prefix, contains), then
+   * close trigram matches so a typo ("vpm") still finds "VPN".
+   */
   app.get('/pages/quick', async (req) => {
     requireUser(req);
     const { q } = parse(z.object({ q: z.string().max(200).default('') }), req.query);
-    const term = q.trim();
+    const term = q.trim().toLowerCase();
     const like = `%${term.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+    const title = sql`lower(${pages.title})`;
     return db
       .select({ id: pages.id, title: pages.title, slug: pages.slug, spaceKey: spaces.key, spaceName: spaces.name })
       .from(pages)
       .innerJoin(spaces, eq(spaces.id, pages.spaceId))
-      .where(and(isNull(pages.deletedAt), term ? sql`${pages.title} ilike ${like}` : undefined))
+      .where(and(
+        isNull(pages.deletedAt),
+        term ? sql`(${title} like ${like} or (length(${term}) >= 3 and word_similarity(${term}, ${title}) >= 0.45))` : undefined,
+      ))
       .orderBy(
-        term ? sql`case when lower(${pages.title}) = lower(${term}) then 0 when ${pages.title} ilike ${`${term}%`} then 1 else 2 end` : sql`1`,
+        term ? sql`case when ${title} = ${term} then 0 when ${title} like ${`${term.replace(/[\\%_]/g, (c) => `\\${c}`)}%`} then 1 when ${title} like ${like} then 2 else 3 end` : sql`1`,
+        term ? sql`word_similarity(${term}, ${title}) desc` : sql`1`,
         desc(pages.updatedAt),
       )
       .limit(15);
@@ -106,8 +119,20 @@ export async function pageRoutes(app: FastifyInstance) {
   app.post('/pages/:id/checkin', async (req) => {
     const user = requireUser(req);
     const { id } = parse(idParam, req.params);
-    const body = parse(draftBody.extend({ message: z.string().max(500).optional(), overwriteNewer: z.boolean().optional() }), req.body);
-    return checkin(id, user, body);
+    const body = parse(draftBody.extend({
+      message: z.string().max(500).optional(),
+      overwriteNewer: z.boolean().optional(),
+      secretsAcknowledged: z.boolean().optional(),
+      markReviewed: z.boolean().optional(),
+    }), req.body);
+    const r = await checkin(id, user, body);
+    if (r.revisionId && r.secretFindings.length) {
+      req.log.info({
+        event: 'secret_save_anyway', by: user.id, pageId: id, revisionId: r.revisionId,
+        rules: [...new Set(r.secretFindings.map((f) => f.ruleId))],
+      }, 'checked in despite secret warning');
+    }
+    return { revisionId: r.revisionId };
   });
 
   app.post('/pages/:id/discard', async (req) => {
@@ -139,12 +164,22 @@ export async function pageRoutes(app: FastifyInstance) {
         id: revisions.id, pageId: revisions.pageId, title: revisions.title, body: revisions.body, kind: revisions.kind,
         message: revisions.message, restoredFrom: revisions.restoredFrom, createdAt: revisions.createdAt,
         author: { id: users.id, displayName: users.displayName },
+        secretFindings: revisions.secretFindings, secretsAcknowledged: revisions.secretsAcknowledged,
       })
       .from(revisions)
       .innerJoin(users, eq(users.id, revisions.authorId))
       .where(and(eq(revisions.id, revId), eq(revisions.pageId, id)));
     if (!rev) throw notFound('Revision not found');
     return rev;
+  });
+
+  /** Admins permanently delete a revision, e.g. one with a leaked secret (spec §5). */
+  app.delete('/pages/:id/revisions/:revId', async (req) => {
+    const admin = requireAdmin(req);
+    const { id, revId } = parse(idParam.extend({ revId: z.coerce.number().int().positive() }), req.params);
+    await purgeRevision(id, revId, admin);
+    req.log.info({ event: 'revision_purged', by: admin.id, pageId: id, revisionId: revId }, 'revision purged');
+    return { ok: true };
   });
 
   app.post('/pages/:id/revisions/:revId/restore', async (req) => {

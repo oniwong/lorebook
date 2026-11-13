@@ -4,6 +4,7 @@ import { pool, runMigrations } from './db/index.js';
 import { expireCheckouts } from './lib/pages.js';
 import { purgeIdleSessions } from './lib/auth.js';
 import { maybeRunNightly } from './lib/jobs.js';
+import { reindexPending } from './lib/search.js';
 
 async function main() {
   const app = await buildApp();
@@ -20,6 +21,8 @@ async function main() {
       const n = await expireCheckouts();
       if (n) app.log.info({ event: 'checkouts_expired', count: n }, 'expired idle check-outs');
       await purgeIdleSessions();
+      // Indexes pages and attachments from before milestone 3, or after a search-language change.
+      await reindexPending(app.log);
       await maybeRunNightly(app.log);
     } catch (e) {
       app.log.error({ err: e }, 'housekeeping failed');

@@ -6,9 +6,13 @@ import { settings } from '../db/schema.js';
 export type AppSettings = {
   /** Upload cap in MB; null means no limit (spec §7). */
   uploadMaxMb: number | null;
+  /** Postgres text-search configuration used for full-text search (spec §9), e.g. simple, english, swedish. */
+  searchLanguage: string;
+  /** Months until the next review when a page is marked reviewed and its template sets no interval (spec §11). */
+  defaultReviewMonths: number;
 };
 
-export const DEFAULT_SETTINGS: AppSettings = { uploadMaxMb: null };
+export const DEFAULT_SETTINGS: AppSettings = { uploadMaxMb: null, searchLanguage: 'simple', defaultReviewMonths: 12 };
 
 export async function getSetting<T>(key: string, def: T): Promise<T> {
   const [row] = await db.select({ value: settings.value }).from(settings).where(eq(settings.key, key));

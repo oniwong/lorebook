@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { and, asc, eq, isNull } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { attachments, pages, users } from '../db/schema.js';
-import { requireUser, type SessionUser } from '../lib/auth.js';
+import { requireAdmin, requireUser, type SessionUser } from '../lib/auth.js';
 import { badRequest, notFound } from '../lib/errors.js';
 import { idParam, parse } from '../lib/validate.js';
 import {
@@ -14,6 +14,7 @@ import {
 } from '../lib/attachments.js';
 import { checkedOutConflict, checkoutIsLive } from '../lib/pages.js';
 import { getAppSettings } from '../lib/settings.js';
+import { indexAttachment } from '../lib/search.js';
 
 const PREVIEW_MAX = 512 * 1024;
 // Served files may be attacker-controlled (an SVG with script, an HTML file): never let them run.
@@ -43,6 +44,7 @@ function dto(a: typeof attachments.$inferSelect, uploader?: string) {
     createdAt: a.createdAt, uploadedBy: { id: a.uploadedBy, displayName: uploader ?? '' },
     url: `/api/v1/attachments/${a.id}/${encodeURIComponent(a.filename)}`,
     isImage: isInlineImage(a.contentType), isText: isTextFile(a.filename),
+    secretFindings: a.secretFindings ?? [],
   };
 }
 
@@ -94,7 +96,12 @@ export async function attachmentRoutes(app: FastifyInstance) {
       pageId: id, filename: name, contentType: contentTypeFor(name), size: stored.size, sha256: stored.sha256, uploadedBy: user.id,
     }).returning();
     req.log.info({ event: 'attachment_uploaded', pageId: id, attachmentId: a.id, size: a.size }, 'attachment uploaded');
-    return dto(a, user.displayName);
+    // Index the text for search and scan it for secrets. A secret is a warning, not a rejection (spec §8).
+    const findings = await indexAttachment(a.id).catch((e) => {
+      req.log.error({ err: e, attachmentId: a.id }, 'attachment indexing failed');
+      return [];
+    });
+    return { ...dto(a, user.displayName), warnings: findings.map((f) => ({ ...f, kind: 'possible_secret' })) };
   });
 
   /** Removes the attachment from the page's list. The file stays so older revisions that link to it still work. */
@@ -104,6 +111,19 @@ export async function attachmentRoutes(app: FastifyInstance) {
     const a = await loadAttachment(id, user);
     await pageForChange(a.pageId, user);
     await db.update(attachments).set({ removedAt: new Date(), removedBy: user.id }).where(eq(attachments.id, id));
+    return { ok: true };
+  });
+
+  /**
+   * Admins delete an attachment for good, e.g. a config file with a password in it. The file itself is
+   * removed by the nightly cleanup once nothing else references the same content.
+   */
+  app.delete('/attachments/:id/purge', async (req) => {
+    const admin = requireAdmin(req);
+    const { id } = parse(idParam, req.params);
+    await loadAttachment(id, admin);
+    await db.delete(attachments).where(eq(attachments.id, id));
+    req.log.info({ event: 'attachment_purged', by: admin.id, attachmentId: id }, 'attachment purged');
     return { ok: true };
   });
 
