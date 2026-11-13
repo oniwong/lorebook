@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { checkRequiredSections } from '../src/lib/sections.js';
 import { extractPageLinks } from '../src/lib/links.js';
+import { parseCookieSecure } from '../src/config.js';
 import { cleanFilename, contentDisposition, contentTypeFor, isTextFile } from '../src/lib/attachments.js';
 
 describe('required sections', () => {
@@ -51,5 +52,12 @@ describe('attachment helpers', () => {
     expect(contentDisposition('attachment', 'Nätverk "plan".pdf')).toBe(
       'attachment; filename="N_tverk _plan_.pdf"; filename*=UTF-8\'\'N%C3%A4tverk%20%22plan%22.pdf',
     );
+  });
+});
+
+describe('cookie Secure flag', () => {
+  it('stays on unless explicitly turned off', () => {
+    for (const v of [undefined, '', 'true', '1', 'yes', 'TRUE']) expect(parseCookieSecure(v)).toBe(true);
+    for (const v of ['false', 'FALSE', '0', 'no', 'off', ' false ']) expect(parseCookieSecure(v)).toBe(false);
   });
 });

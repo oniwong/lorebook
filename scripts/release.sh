@@ -15,7 +15,8 @@ docker save postgres:16.16-bookworm nginx:1.30.6-alpine | gzip > "$OUT/images/ba
 
 cp docker-compose.yml "$OUT/"
 sed "s/^LOREBOOK_VERSION=.*/LOREBOOK_VERSION=$VERSION/" .env.example > "$OUT/.env.example"
-cp deploy/nginx/lorebook.conf "$OUT/deploy/nginx/"
+cp deploy/nginx/lorebook.conf deploy/nginx/lorebook-http.conf "$OUT/deploy/nginx/"
+cp docker-compose.http.yml "$OUT/"
 cp INSTALL.md UPGRADE.md "$OUT/"
 # The VM never builds, so drop the build: line from the shipped compose file.
 sed -i '/^    build: \.$/d' "$OUT/docker-compose.yml"

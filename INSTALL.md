@@ -32,6 +32,10 @@ Put the certificate (server certificate followed by any intermediates) and its k
 
 To replace them later, overwrite the files and run `docker compose exec nginx nginx -s reload`.
 
+Production always runs over HTTPS. `docker-compose.http.yml` adds a plain-HTTP mode for testing
+without a certificate (how to turn it on is at the top of that file). Never use it here: make sure
+`.env` has no `COMPOSE_FILE` line.
+
 ## 3. Configure
 
 ```sh

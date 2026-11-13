@@ -64,6 +64,16 @@ describe('auth', () => {
     expect(evil.statusCode).toBe(403);
     const ok = await app.inject({ method: 'POST', url: '/api/v1/auth/login', headers: { origin: 'https://kb.local:8443', host: 'kb.local:8443' }, payload });
     expect(ok.statusCode).toBe(200);
+    // Plain-HTTP mode: same-origin over http is fine too.
+    const http = await app.inject({ method: 'POST', url: '/api/v1/auth/login', headers: { origin: 'http://kb.local:8080', host: 'kb.local:8080' }, payload });
+    expect(http.statusCode).toBe(200);
+  });
+
+  it('sets an HttpOnly session cookie without Secure when COOKIE_SECURE=false', async () => {
+    const res = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'anna', password: PASSWORD } });
+    const c = res.cookies.find((x) => x.name === 'lorebook_session')!;
+    expect(c.httpOnly).toBe(true);
+    expect(c.secure).toBeFalsy();
   });
 
   it('only lets admins create users and spaces, and enforces password length', async () => {
