@@ -1,6 +1,7 @@
-import { forwardRef, useEffect, useState, type MouseEvent } from 'react';
+import { forwardRef, useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { renderMarkdown, type Heading } from '../lib/markdown';
+import { markInternalLinks, renderDiagrams } from '../lib/enhance';
 
 type Props = {
   source: string;
@@ -8,10 +9,17 @@ type Props = {
   className?: string;
 };
 
-/** Renders sanitised Markdown. Same-origin links navigate inside the app. */
+/** Renders sanitised Markdown, Mermaid diagrams and broken-link markers. Same-origin links navigate inside the app. */
 export const MarkdownView = forwardRef<HTMLDivElement, Props>(function MarkdownView({ source, onHeadings, className }, ref) {
   const [html, setHtml] = useState('');
   const navigate = useNavigate();
+  const inner = useRef<HTMLDivElement | null>(null);
+
+  const setRefs = useCallback((el: HTMLDivElement | null) => {
+    inner.current = el;
+    if (typeof ref === 'function') ref(el);
+    else if (ref) ref.current = el;
+  }, [ref]);
 
   useEffect(() => {
     let cancelled = false;
@@ -27,6 +35,16 @@ export const MarkdownView = forwardRef<HTMLDivElement, Props>(function MarkdownV
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source]);
 
+  useLayoutEffect(() => {
+    const el = inner.current;
+    if (!el || !html) return;
+    let cancelled = false;
+    const isCancelled = () => cancelled;
+    void renderDiagrams(el, isCancelled);
+    void markInternalLinks(el, isCancelled);
+    return () => { cancelled = true; };
+  }, [html]);
+
   const onClick = (e: MouseEvent<HTMLDivElement>) => {
     const a = (e.target as HTMLElement).closest('a');
     if (!a || a.target === '_blank' || e.metaKey || e.ctrlKey || e.shiftKey) return;
@@ -37,11 +55,12 @@ export const MarkdownView = forwardRef<HTMLDivElement, Props>(function MarkdownV
       document.getElementById(decodeURIComponent(href.slice(1)))?.scrollIntoView({ behavior: 'smooth' });
       return;
     }
-    if (href.startsWith('/')) {
+    // Attachments are files, not app routes: let the browser open or download them.
+    if (href.startsWith('/') && !href.startsWith('/api/')) {
       e.preventDefault();
       navigate(href);
     }
   };
 
-  return <div ref={ref} className={`markdown ${className ?? ''}`} onClick={onClick} dangerouslySetInnerHTML={{ __html: html }} />;
+  return <div ref={setRefs} className={`markdown ${className ?? ''}`} onClick={onClick} dangerouslySetInnerHTML={{ __html: html }} />;
 });

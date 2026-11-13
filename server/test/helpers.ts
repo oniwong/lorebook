@@ -26,6 +26,9 @@ export type Client = {
   post: (url: string, body?: unknown) => Promise<{ status: number; json: any }>;
   put: (url: string, body?: unknown) => Promise<{ status: number; json: any }>;
   patch: (url: string, body?: unknown) => Promise<{ status: number; json: any }>;
+  del: (url: string) => Promise<{ status: number; json: any }>;
+  upload: (pageId: number, filename: string, data: Buffer | string) => Promise<{ status: number; json: any }>;
+  raw: (url: string) => Promise<{ status: number; headers: Record<string, unknown>; body: Buffer }>;
 };
 
 export async function login(app: FastifyInstance, username: string, password = PASSWORD): Promise<Client> {
@@ -35,14 +38,25 @@ export async function login(app: FastifyInstance, username: string, password = P
   const cookies = { lorebook_session: cookie.value };
   const s = await app.inject({ method: 'GET', url: '/api/v1/auth/session', cookies });
   const csrf = s.json().csrfToken as string;
-  const call = (method: 'GET' | 'POST' | 'PUT' | 'PATCH') => async (url: string, body?: unknown) => {
+  const call = (method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE') => async (url: string, body?: unknown) => {
     const r = await app.inject({
       method, url, cookies, headers: { 'x-csrf-token': csrf },
       ...(body !== undefined ? { payload: body as object } : {}),
     });
     return { status: r.statusCode, json: r.body ? r.json() : null };
   };
-  return { get: call('GET'), post: call('POST'), put: call('PUT'), patch: call('PATCH') };
+  const upload = async (pageId: number, filename: string, data: Buffer | string) => {
+    const r = await app.inject({
+      method: 'POST', url: `/api/v1/pages/${pageId}/attachments?filename=${encodeURIComponent(filename)}`, cookies,
+      headers: { 'x-csrf-token': csrf, 'content-type': 'application/octet-stream' }, payload: data,
+    });
+    return { status: r.statusCode, json: r.body ? r.json() : null };
+  };
+  const raw = async (url: string) => {
+    const r = await app.inject({ method: 'GET', url, cookies });
+    return { status: r.statusCode, headers: r.headers as Record<string, unknown>, body: r.rawPayload };
+  };
+  return { get: call('GET'), post: call('POST'), put: call('PUT'), patch: call('PATCH'), del: call('DELETE'), upload, raw };
 }
 
 export async function newApp(): Promise<FastifyInstance> {

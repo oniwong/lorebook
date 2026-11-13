@@ -7,13 +7,79 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirro
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { languages } from '@codemirror/language-data';
 import { syntaxHighlighting, defaultHighlightStyle, bracketMatching } from '@codemirror/language';
+import { autocompletion, completionKeymap, startCompletion, type CompletionContext, type CompletionResult } from '@codemirror/autocomplete';
+import type { PageRef } from '../lib/api';
+
+export type UploadResult = { url: string; filename: string; isImage: boolean };
 
 type Props = {
   initialValue: string;
   onChange: (value: string) => void;
   /** Scroll position as a 0..1 fraction, for preview scroll sync. */
   onScrollRatio?: (ratio: number) => void;
+  /** Uploads a pasted, dropped or picked file. Without it, files can't be added. */
+  upload?: (file: File, onProgress: (p: number) => void) => Promise<UploadResult>;
+  onUploadError?: (message: string) => void;
+  /** Title search for the `[[` link picker. */
+  searchPages?: (q: string) => Promise<PageRef[]>;
 };
+
+let uploadSeq = 0;
+
+function markdownFor(r: UploadResult): string {
+  const label = r.filename.replace(/[[\]]/g, '');
+  const url = r.url.replace(/\(/g, '%28').replace(/\)/g, '%29');
+  return r.isImage ? `![${label}](${url})` : `[${label}](${url})`;
+}
+
+/**
+ * Inserts a placeholder for each file at `pos`, uploads it, then swaps the placeholder for the final link.
+ * Placeholders are found by text, so typing elsewhere during the upload is fine.
+ */
+function insertUploads(
+  view: EditorView, files: File[], pos: number, upload: NonNullable<Props['upload']>, onError?: (m: string) => void,
+) {
+  const items = files.map((f) => ({ file: f, token: `[Uploading ${f.name.replace(/[[\]]/g, '') || 'image'} #${++uploadSeq}…]()` }));
+  const text = items.map((i) => i.token).join('\n');
+  view.dispatch({ changes: { from: pos, insert: text }, selection: { anchor: pos + text.length }, userEvent: 'input' });
+  const replace = (token: string, insert: string) => {
+    const at = view.state.doc.toString().indexOf(token);
+    if (at >= 0) view.dispatch({ changes: { from: at, to: at + token.length, insert }, userEvent: 'input' });
+  };
+  for (const item of items) {
+    upload(item.file, () => undefined).then(
+      (r) => replace(item.token, markdownFor(r)),
+      (e: Error) => {
+        replace(item.token, '');
+        onError?.(`${item.file.name}: ${e.message}`);
+      },
+    );
+  }
+}
+
+function pageLinkCompletion(search: (q: string) => Promise<PageRef[]>) {
+  return async (ctx: CompletionContext): Promise<CompletionResult | null> => {
+    const m = ctx.matchBefore(/\[\[[^\]\n]*/);
+    if (!m) return null;
+    const q = m.text.slice(2);
+    const pages = await search(q);
+    if (ctx.aborted) return null;
+    return {
+      from: m.from,
+      filter: false,
+      options: pages.map((p) => ({
+        label: p.title,
+        detail: p.spaceName,
+        apply: (view: EditorView, _c: unknown, from: number, to: number) => {
+          // Swallow a "]]" the user may already have typed after the query.
+          const after = view.state.sliceDoc(to, to + 2) === ']]' ? 2 : 0;
+          const insert = `[${p.title.replace(/[[\]]/g, '')}](/p/${p.id})`;
+          view.dispatch({ changes: { from, to: to + after, insert }, selection: { anchor: from + insert.length }, userEvent: 'input.complete' });
+        },
+      })),
+    };
+  };
+}
 
 function wrap(view: EditorView, before: string, after = before, fallback = 'text'): boolean {
   const tr = view.state.changeByRange((range) => {
@@ -84,13 +150,27 @@ const theme = EditorView.theme({
   '.cm-selectionBackground, &.cm-focused .cm-selectionBackground, ::selection': { backgroundColor: 'var(--selection) !important' },
 });
 
-export function MarkdownEditor({ initialValue, onChange, onScrollRatio }: Props) {
+export function MarkdownEditor({ initialValue, onChange, onScrollRatio, upload, onUploadError, searchPages }: Props) {
   const host = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
   const onChangeRef = useRef(onChange);
   const onScrollRef = useRef(onScrollRatio);
+  const uploadRef = useRef(upload);
+  const onUploadErrorRef = useRef(onUploadError);
+  const searchRef = useRef(searchPages);
   onChangeRef.current = onChange;
   onScrollRef.current = onScrollRatio;
+  uploadRef.current = upload;
+  onUploadErrorRef.current = onUploadError;
+  searchRef.current = searchPages;
+
+  const startUploads = (view: EditorView, files: File[], pos: number) => {
+    const up = uploadRef.current;
+    if (!up || !files.length) return false;
+    insertUploads(view, files, pos, up, onUploadErrorRef.current);
+    return true;
+  };
 
   useEffect(() => {
     const view = new EditorView({
@@ -107,8 +187,14 @@ export function MarkdownEditor({ initialValue, onChange, onScrollRatio }: Props)
           EditorView.lineWrapping,
           markdown({ base: markdownLanguage, codeLanguages: languages }),
           syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
-          placeholder('Write in Markdown…'),
+          placeholder('Write in Markdown…  Type [[ to link to another page. Paste or drop files to attach them.'),
+          autocompletion({
+            override: [pageLinkCompletion((q) => searchRef.current?.(q) ?? Promise.resolve([]))],
+            activateOnTyping: true,
+            icons: false,
+          }),
           keymap.of([
+            ...completionKeymap,
             { key: 'Mod-b', run: (v) => wrap(v, '**') },
             { key: 'Mod-i', run: (v) => wrap(v, '_') },
             { key: 'Mod-e', run: (v) => wrap(v, '`', '`', 'code') },
@@ -121,6 +207,19 @@ export function MarkdownEditor({ initialValue, onChange, onScrollRatio }: Props)
             if (u.docChanged) onChangeRef.current(u.state.doc.toString());
           }),
           EditorView.domEventHandlers({
+            paste: (e, v) => {
+              const files = [...(e.clipboardData?.files ?? [])];
+              if (!files.length) return false;
+              e.preventDefault();
+              return startUploads(v, files, v.state.selection.main.head);
+            },
+            drop: (e, v) => {
+              const files = [...(e.dataTransfer?.files ?? [])];
+              if (!files.length) return false;
+              e.preventDefault();
+              const pos = v.posAtCoords({ x: e.clientX, y: e.clientY }) ?? v.state.selection.main.head;
+              return startUploads(v, files, pos);
+            },
             scroll: (_e, v) => {
               const s = v.scrollDOM;
               const max = s.scrollHeight - s.clientHeight;
@@ -145,6 +244,23 @@ export function MarkdownEditor({ initialValue, onChange, onScrollRatio }: Props)
             {a.label}
           </button>
         ))}
+        <button type="button" title="Link to another page (or type [[)" onMouseDown={(e) => e.preventDefault()}
+          onClick={() => { const v = viewRef.current; if (v) { v.dispatch(v.state.replaceSelection('[['), { userEvent: 'input.type' }); v.focus(); startCompletion(v); } }}>
+          [[Page]]
+        </button>
+        {upload && (
+          <>
+            <button type="button" title="Attach files (or paste / drop them into the editor)" onMouseDown={(e) => e.preventDefault()} onClick={() => fileInput.current?.click()}>
+              📎 Attach
+            </button>
+            <input ref={fileInput} type="file" multiple hidden onChange={(e) => {
+              const v = viewRef.current;
+              const files = [...(e.target.files ?? [])];
+              e.target.value = '';
+              if (v) { startUploads(v, files, v.state.selection.main.head); v.focus(); }
+            }} />
+          </>
+        )}
       </div>
       <div className="cm-host" ref={host} />
     </div>

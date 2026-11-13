@@ -41,7 +41,30 @@ export const api = {
   post: <T>(url: string, body: unknown = {}) => request<T>('POST', url, body),
   put: <T>(url: string, body: unknown) => request<T>('PUT', url, body),
   patch: <T>(url: string, body: unknown) => request<T>('PATCH', url, body),
+  del: <T>(url: string) => request<T>('DELETE', url),
 };
+
+/**
+ * Uploads a file as the raw request body (the server streams it to disk). Reports progress 0..1.
+ * Uses XMLHttpRequest because fetch has no upload progress.
+ */
+export function uploadAttachment(pageId: number, file: File, onProgress?: (p: number) => void): Promise<Attachment> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `/api/v1/pages/${pageId}/attachments?filename=${encodeURIComponent(file.name || 'pasted-image.png')}`);
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    if (csrfToken) xhr.setRequestHeader('X-CSRF-Token', csrfToken);
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress?.(e.loaded / e.total); };
+    xhr.onload = () => {
+      let data: any = null;
+      try { data = xhr.responseText ? JSON.parse(xhr.responseText) : null; } catch { /* not JSON */ }
+      if (xhr.status >= 200 && xhr.status < 300) resolve(data as Attachment);
+      else reject(new ApiError(xhr.status, data?.error ?? (xhr.status === 413 ? 'The file is too large' : xhr.statusText), data?.details));
+    };
+    xhr.onerror = () => reject(new ApiError(0, 'Upload failed: network error'));
+    xhr.send(file);
+  });
+}
 
 // ---- Types shared with the server responses ----
 
@@ -75,6 +98,7 @@ export type Page = {
   slug: string;
   body: string;
   template: string;
+  templateInfo: { key: string; name: string; requiredSections: string[] };
   currentRevisionId: number;
   owner: { id: number; displayName: string; active: boolean };
   createdAt: string;
@@ -106,6 +130,58 @@ export type RevisionSummary = {
 };
 
 export type Revision = RevisionSummary & { pageId: number; body: string };
+
+export type Template = {
+  key: string;
+  name: string;
+  description: string;
+  body: string;
+  requiredSections: string[];
+  reviewIntervalMonths: number | null;
+  builtin: boolean;
+  position: number;
+  pageCount?: number;
+};
+
+export type Attachment = {
+  id: number;
+  pageId: number;
+  filename: string;
+  contentType: string;
+  size: number;
+  createdAt: string;
+  uploadedBy: { id: number; displayName: string };
+  url: string;
+  isImage: boolean;
+  isText: boolean;
+};
+
+export type PageRef = { id: number; title: string; slug: string; spaceKey: string; spaceName: string };
+
+export type TrashItem = {
+  id: number;
+  title: string;
+  spaceKey: string;
+  spaceName: string;
+  deletedAt: string;
+  deletedBy: string | null;
+  parentId: number | null;
+  parentTitle: string | null;
+  parentLive: boolean;
+  count: number;
+  purgeAt: string;
+};
+
+export type AppSettings = { uploadMaxMb: number | null };
+
+export function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let v = n / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return `${v < 10 ? v.toFixed(1) : Math.round(v)} ${units[i]}`;
+}
 
 export function pagePath(p: { spaceKey: string; id: number; slug: string }): string {
   return `/s/${p.spaceKey}/p/${p.id}/${p.slug}`;

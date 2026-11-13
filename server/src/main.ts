@@ -3,6 +3,7 @@ import { config } from './config.js';
 import { pool, runMigrations } from './db/index.js';
 import { expireCheckouts } from './lib/pages.js';
 import { purgeIdleSessions } from './lib/auth.js';
+import { maybeRunNightly } from './lib/jobs.js';
 
 async function main() {
   const app = await buildApp();
@@ -13,12 +14,13 @@ async function main() {
     process.exit(1);
   }
 
-  // Housekeeping: release idle check-outs and purge idle sessions.
+  // Housekeeping: release idle check-outs, purge idle sessions, and once a day the nightly jobs.
   const tick = async () => {
     try {
       const n = await expireCheckouts();
       if (n) app.log.info({ event: 'checkouts_expired', count: n }, 'expired idle check-outs');
       await purgeIdleSessions();
+      await maybeRunNightly(app.log);
     } catch (e) {
       app.log.error({ err: e }, 'housekeeping failed');
     }

@@ -18,5 +18,7 @@ export const config = {
   webDist: process.env.WEB_DIST ?? new URL('../../web/dist', import.meta.url).pathname,
   dataDir: process.env.DATA_DIR ?? '/data',
   minFreeDiskBytes: int('MIN_FREE_DISK_MB', 1024) * 1024 * 1024,
+  // Hour (0-23, container local time) at which nightly jobs run: trash purge and attachment cleanup.
+  nightlyHour: int('NIGHTLY_HOUR', 3),
   logLevel: process.env.LOG_LEVEL ?? 'info',
 };

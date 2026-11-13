@@ -10,6 +10,10 @@ import { userRoutes } from './routes/users.js';
 import { spaceRoutes } from './routes/spaces.js';
 import { pageRoutes } from './routes/pages.js';
 import { healthRoutes } from './routes/health.js';
+import { templateRoutes } from './routes/templates.js';
+import { attachmentRoutes } from './routes/attachments.js';
+import { trashRoutes } from './routes/trash.js';
+import { settingsRoutes } from './routes/settings.js';
 
 const UNSAFE = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const CSRF_EXEMPT = new Set(['/api/v1/auth/login']);
@@ -95,6 +99,10 @@ export async function buildApp(opts: { logger?: boolean } = {}): Promise<Fastify
   await app.register(userRoutes, { prefix: '/api/v1' });
   await app.register(spaceRoutes, { prefix: '/api/v1' });
   await app.register(pageRoutes, { prefix: '/api/v1' });
+  await app.register(templateRoutes, { prefix: '/api/v1' });
+  await app.register(attachmentRoutes, { prefix: '/api/v1' });
+  await app.register(trashRoutes, { prefix: '/api/v1' });
+  await app.register(settingsRoutes, { prefix: '/api/v1' });
 
   if (existsSync(config.webDist)) {
     await app.register(fastifyStatic, {

@@ -7,6 +7,7 @@ import { requireAdmin, requireUser } from '../lib/auth.js';
 import { conflict, notFound } from '../lib/errors.js';
 import { parse } from '../lib/validate.js';
 import { checkoutIsLive } from '../lib/pages.js';
+import { deleteSpace } from '../lib/tree.js';
 
 const keyRe = /^[a-z0-9][a-z0-9-]{1,31}$/;
 const keyParam = z.object({ key: z.string() });
@@ -58,6 +59,15 @@ export async function spaceRoutes(app: FastifyInstance) {
     }), req.body);
     const [updated] = await db.update(spaces).set(body).where(eq(spaces.id, s.id)).returning();
     return updated;
+  });
+
+  app.delete('/spaces/:key', async (req) => {
+    const admin = requireAdmin(req);
+    const { key } = parse(keyParam, req.params);
+    const s = await getSpaceByKey(key);
+    await deleteSpace(s.id);
+    req.log.info({ event: 'space_deleted', by: admin.id, spaceId: s.id, key: s.key }, 'space deleted');
+    return { ok: true };
   });
 
   /** The whole page tree of a Space as a flat list, ordered for display. */
