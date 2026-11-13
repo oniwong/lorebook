@@ -5,6 +5,7 @@ import { api, type Page } from '../lib/api';
 import { useSession, useUser } from '../lib/session';
 import { Sidebar } from './Sidebar';
 import { QuickSwitcher } from './QuickSwitcher';
+import { InboxBell } from './InboxBell';
 
 export function Layout() {
   const user = useUser();
@@ -58,6 +59,7 @@ export function Layout() {
           <kbd>Ctrl K</kbd>
         </button>
         <div className="topbar-right">
+          <InboxBell />
           <div className="menu">
             <button className="menu-btn" onClick={() => setMenu((v) => !v)} aria-expanded={menu}>
               {user.displayName} ▾

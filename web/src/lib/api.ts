@@ -86,6 +86,7 @@ export type TreePage = {
   title: string;
   slug: string;
   checkedOut: boolean;
+  locked: boolean;
 };
 
 export type Page = {
@@ -106,6 +107,11 @@ export type Page = {
   updatedBy: { id: number; displayName: string };
   checkout: { userId: number; displayName: string; since: string; mine: boolean } | null;
   myDraft: { updatedAt: string; status: string } | null;
+  locked: boolean;
+  lock: { at: string; by: { id: number; displayName: string } | null } | null;
+  /** False for everyone but the owner and admins on a locked page. */
+  canEdit: boolean;
+  changeRequests: { open: number; mineId: number | null };
   breadcrumbs: { id: number; title: string; slug: string }[];
   tags: string[];
   review: {
@@ -135,9 +141,11 @@ export type Draft = {
 export type RevisionSummary = {
   id: number;
   title: string;
-  kind: 'create' | 'checkin' | 'restore';
+  kind: 'create' | 'checkin' | 'restore' | 'change_request';
   message: string;
   restoredFrom: number | null;
+  changeRequestId?: number | null;
+  approvedBy?: { id: number; displayName: string } | null;
   createdAt: string;
   author: { id: number; displayName: string };
   secretFindings: StoredFinding[] | null;
@@ -217,6 +225,81 @@ export type StaleRow = {
   id: number; title: string; slug: string; spaceKey: string; spaceName: string; template: string;
   reviewBy: string; status: ReviewStatus; lastReviewedAt: string; reviewedByName: string | null; updatedAt: string;
   owner: { id: number; displayName: string; active: boolean };
+};
+
+export type ChangeRequestStatus = 'draft' | 'open' | 'changes_requested' | 'approved' | 'rejected' | 'withdrawn';
+
+export type ChangeRequestSummary = {
+  id: number;
+  status: ChangeRequestStatus;
+  title: string;
+  description: string;
+  createdAt: string;
+  updatedAt: string;
+  submittedAt: string | null;
+  decidedAt: string | null;
+  outdated: boolean;
+  author: { id: number; displayName: string };
+  page: PageRef;
+  owner: { id: number; displayName: string; active: boolean };
+};
+
+export type ChangeRequestEvent = {
+  id: number;
+  kind: 'submitted' | 'resubmitted' | 'comment' | 'changes_requested' | 'approved' | 'rejected' | 'withdrawn' | 'updated_to_latest';
+  body: string;
+  createdAt: string;
+  actor: { id: number; displayName: string };
+};
+
+export type ChangeRequest = {
+  id: number;
+  status: ChangeRequestStatus;
+  title: string;
+  body: string;
+  description: string;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+  submittedAt: string | null;
+  decidedAt: string | null;
+  decidedBy: { id: number; displayName: string } | null;
+  appliedRevisionId: number | null;
+  secretFindings: StoredFinding[];
+  author: { id: number; displayName: string };
+  page: {
+    id: number; title: string; slug: string; body: string; spaceKey: string; spaceName: string; template: string;
+    locked: boolean; currentRevisionId: number; trashed: boolean;
+    owner: { id: number; displayName: string; active: boolean };
+    checkout: { userId: number; displayName: string; since: string } | null;
+  };
+  /** The revision the request started from; null if an admin purged it. */
+  base: { id: number; title: string; body: string; createdAt: string } | null;
+  outdated: boolean;
+  hasConflicts: boolean;
+  events: ChangeRequestEvent[];
+  can: { edit: boolean; submit: boolean; withdraw: boolean; review: boolean; approve: boolean; comment: boolean };
+};
+
+export const crStatusLabel: Record<ChangeRequestStatus, string> = {
+  draft: 'Draft',
+  open: 'Waiting for review',
+  changes_requested: 'Changes requested',
+  approved: 'Approved',
+  rejected: 'Rejected',
+  withdrawn: 'Withdrawn',
+};
+
+export type InboxItem = {
+  id: number;
+  kind: string;
+  text: string;
+  createdAt: string;
+  readAt: string | null;
+  changeRequestId: number | null;
+  crStatus: ChangeRequestStatus | null;
+  actor: { id: number; displayName: string } | null;
+  page: { id: number; title: string; slug: string; spaceKey: string; trashed: boolean } | null;
 };
 
 export type DirectoryUser = { id: number; displayName: string; active: boolean };

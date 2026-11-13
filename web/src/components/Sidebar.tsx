@@ -120,6 +120,7 @@ export function Sidebar({ spaceKey, currentPageId }: { spaceKey?: string; curren
           <Link to={pagePath({ spaceKey: spaceKey!, id: n.id, slug: n.slug })} className="tree-link" title={n.title}>
             {n.title}
           </Link>
+          {n.locked && <span className="tree-badge" title="Locked by its owner">🔒</span>}
           {n.checkedOut && <span className="tree-badge" title="Checked out">✎</span>}
           <button className="tree-add" title="Add subpage" onClick={() => setNewPage({ parentId: n.id })}>+</button>
         </div>

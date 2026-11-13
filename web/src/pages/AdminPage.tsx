@@ -89,6 +89,7 @@ function UsersAdmin() {
   const qc = useQueryClient();
   const users = useQuery({ queryKey: ['users'], queryFn: () => api.get<AdminUser[]>('/users') });
   const [creating, setCreating] = useState(false);
+  const [reassignFor, setReassignFor] = useState<AdminUser | null>(null);
   const [resetFor, setResetFor] = useState<AdminUser | null>(null);
   const [error, setError] = useState<unknown>(null);
 
@@ -129,6 +130,7 @@ function UsersAdmin() {
                 {u.id !== me.id && (
                   <button className="small" onClick={() => void patch(u, { active: !u.active })}>{u.active ? 'Disable' : 'Enable'}</button>
                 )}
+                {!u.active && <button className="small" onClick={() => setReassignFor(u)} title="Give all of this person's pages to someone else">Reassign pages</button>}
               </td>
             </tr>
           ))}
@@ -136,6 +138,7 @@ function UsersAdmin() {
       </table>
       {creating && <CreateUser onClose={() => setCreating(false)} />}
       {resetFor && <ResetPassword user={resetFor} onClose={() => setResetFor(null)} />}
+      {reassignFor && <ReassignPages from={reassignFor} users={users.data ?? []} onClose={() => setReassignFor(null)} />}
     </section>
   );
 }
@@ -262,5 +265,56 @@ function SettingsAdmin() {
       </p>
       {error != null && <ErrorBox error={error} />}
     </section>
+  );
+}
+
+/** Hands every page a (usually former) user owns to someone else in one go. */
+function ReassignPages({ from, users, onClose }: { from: AdminUser; users: AdminUser[]; onClose: () => void }) {
+  const qc = useQueryClient();
+  const [to, setTo] = useState<number | ''>('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+  const [done, setDone] = useState<number | null>(null);
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!to) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await api.post<{ count: number }>(`/users/${from.id}/reassign-pages`, { toUserId: to });
+      setDone(r.count);
+      await qc.invalidateQueries({ queryKey: ['stale'] });
+      await qc.invalidateQueries({ queryKey: ['page'] });
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal title={`Reassign ${from.displayName}'s pages`} onClose={onClose}>
+      {done !== null ? (
+        <div className="form">
+          <p>{done === 0 ? `${from.displayName} owns no pages.` : `Moved ${done} page${done === 1 ? '' : 's'} to the new owner. They've been told in their inbox.`}</p>
+          <div className="form-actions"><button className="primary" onClick={onClose}>Close</button></div>
+        </div>
+      ) : (
+        <form className="form" onSubmit={submit}>
+          <p>Every page {from.displayName} owns gets a new owner, who can then lock them, review their change requests and gets their review reminders.</p>
+          <label>
+            New owner
+            <select value={to} onChange={(e) => setTo(e.target.value ? Number(e.target.value) : '')} autoFocus>
+              <option value="">Choose a person…</option>
+              {users.filter((u) => u.active && u.id !== from.id).map((u) => <option key={u.id} value={u.id}>{u.displayName}</option>)}
+            </select>
+          </label>
+          {error != null && <ErrorBox error={error} />}
+          <div className="form-actions">
+            <button type="button" onClick={onClose}>Cancel</button>
+            <button type="submit" className="primary" disabled={busy || !to}>Reassign</button>
+          </div>
+        </form>
+      )}
+    </Modal>
   );
 }

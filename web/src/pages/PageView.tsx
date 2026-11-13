@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, formatDateTime, formatDay, formatTime, pagePath, timeAgo, type Page, type PageRef } from '../lib/api';
+import { ApiError, api, formatDateTime, formatDay, formatTime, pagePath, timeAgo, type ChangeRequestSummary, type Page, type PageRef } from '../lib/api';
 import { useUser } from '../lib/session';
 import type { Heading } from '../lib/markdown';
 import { MarkdownView } from '../components/MarkdownView';
@@ -14,6 +14,8 @@ import { TagEditor } from '../components/TagEditor';
 import { ReviewBadge } from '../components/ReviewBadge';
 import { ReviewDialog } from '../components/ReviewDialog';
 import { SecretFindings } from '../components/SecretFindings';
+import { OwnerDialog } from '../components/OwnerDialog';
+import { ChangeRequestList } from '../components/ChangeRequestList';
 
 export function PageView() {
   const { key, id, slug } = useParams();
@@ -24,13 +26,19 @@ export function PageView() {
   const [headings, setHeadings] = useState<Heading[]>([]);
   const [newChild, setNewChild] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [dialog, setDialog] = useState<'move' | 'delete' | 'review' | null>(null);
+  const [dialog, setDialog] = useState<'move' | 'delete' | 'review' | 'owner' | null>(null);
+  const [actionError, setActionError] = useState<unknown>(null);
   const [showFindings, setShowFindings] = useState(false);
   const q = useQuery({ queryKey: ['page', pageId], queryFn: () => api.get<Page>(`/pages/${pageId}`), refetchInterval: 30_000 });
   const backlinks = useQuery({
     queryKey: ['backlinks', pageId],
     queryFn: () => api.get<PageRef[]>(`/pages/${pageId}/backlinks`),
     enabled: !!q.data,
+  });
+  const openCrs = useQuery({
+    queryKey: ['page-crs', pageId],
+    queryFn: () => api.get<ChangeRequestSummary[]>(`/pages/${pageId}/change-requests?status=open,changes_requested`),
+    enabled: !!q.data && q.data.changeRequests.open > 0,
   });
 
   useEffect(() => setHeadings([]), [pageId]);
@@ -44,6 +52,32 @@ export function PageView() {
   const co = page.checkout;
   const lockedByOther = co && !co.mine;
   const canReview = page.owner.id === user.id || user.role === 'admin';
+  const isOwner = page.owner.id === user.id;
+  const canLock = isOwner || user.role === 'admin';
+  const blockedReason = lockedByOther ? `Checked out by ${co!.displayName}` : !page.canEdit ? `Locked by ${page.owner.displayName}` : undefined;
+
+  const toggleLock = async () => {
+    setActionError(null);
+    try {
+      if (page.locked && !isOwner && !confirm(`Unlock ${page.owner.displayName}'s page? They are told in their inbox.`)) return;
+      await api.post(`/pages/${page.id}/lock`, { locked: !page.locked });
+      await qc.invalidateQueries({ queryKey: ['page', pageId] });
+      await qc.invalidateQueries({ queryKey: ['tree', page.spaceKey] });
+    } catch (e) {
+      setActionError(e instanceof ApiError && e.code === 'checked_out'
+        ? new Error(`${e.message}. Lock it after they check in.`) : e);
+    }
+  };
+
+  const suggestChange = async () => {
+    setActionError(null);
+    try {
+      const r = await api.post<{ id: number }>(`/pages/${page.id}/change-requests`, {});
+      navigate(`/cr/${r.id}/edit`);
+    } catch (e) {
+      setActionError(e);
+    }
+  };
   const review = page.review;
 
   const breakCheckout = async () => {
@@ -119,19 +153,48 @@ export function PageView() {
           </div>
         )}
 
+        {page.changeRequests.mineId && (
+          <div className="banner info">
+            You have a change request on this page. <Link to={`/cr/${page.changeRequests.mineId}`}>Open it</Link>
+          </div>
+        )}
+        {page.locked && !page.canEdit && !page.changeRequests.mineId && (
+          <div className="banner info lock-banner">
+            🔒 {page.owner.displayName} has locked this page{!page.owner.active && ' (former user, so admins review changes)'}. To change it, suggest a change and they'll review it.
+          </div>
+        )}
+        {actionError != null && <ErrorBox error={actionError} />}
+
         <header className="page-head">
-          <h1>{page.title}</h1>
+          <h1>{page.locked && <span className="lock-icon" title={`Locked${page.lock?.by ? ` by ${page.lock.by.displayName}` : ''}: only the owner and admins edit directly`} aria-label="Locked">🔒</span>}{page.title}</h1>
           <div className="page-actions">
-            <button className="primary" disabled={!!lockedByOther} onClick={() => navigate(`/p/${page.id}/edit`)}
-              title={lockedByOther ? `Checked out by ${co!.displayName}` : 'Check out and edit'}>
-              Edit
-            </button>
+            {page.canEdit ? (
+              <button className="primary" disabled={!!lockedByOther} onClick={() => navigate(`/p/${page.id}/edit`)}
+                title={lockedByOther ? `Checked out by ${co!.displayName}` : 'Check out and edit'}>
+                Edit
+              </button>
+            ) : (
+              <button className="primary" onClick={() => void suggestChange()} title="Edit a private copy and send it to the owner for review">
+                {page.changeRequests.mineId ? 'Continue suggestion' : 'Suggest change'}
+              </button>
+            )}
+            {page.canEdit && !isOwner && (
+              <button onClick={() => void suggestChange()} title="Not sure? Edit a private copy and ask the owner to review it">
+                {page.changeRequests.mineId ? 'My suggestion' : 'Suggest change'}
+              </button>
+            )}
+            {canLock && (
+              <button onClick={() => void toggleLock()} title={page.locked ? 'Let everyone edit again' : 'Only you and admins can edit directly; others suggest changes'}>
+                {page.locked ? 'Unlock' : 'Lock'}
+              </button>
+            )}
             <Link className="button" to={`/p/${page.id}/history`}>History</Link>
             <button onClick={() => setNewChild(true)}>Add subpage</button>
             <button onClick={() => void copyLink()}>{copied ? 'Copied' : 'Copy link'}</button>
             <button onClick={exportMd}>Export .md</button>
             <button disabled={!!lockedByOther} title={lockedByOther ? `Checked out by ${co!.displayName}` : 'Move this page and its subpages'} onClick={() => setDialog('move')}>Move</button>
-            <button disabled={!!lockedByOther} title={lockedByOther ? `Checked out by ${co!.displayName}` : 'Move to the trash'} onClick={() => setDialog('delete')}>Delete</button>
+            <button disabled={!!blockedReason} title={blockedReason ?? 'Move to the trash'} onClick={() => setDialog('delete')}>Delete</button>
+            {user.role === 'admin' && <button onClick={() => setDialog('owner')}>Change owner</button>}
           </div>
         </header>
         <div className="page-meta muted small">
@@ -146,7 +209,15 @@ export function PageView() {
           ? <MarkdownView source={page.body} onHeadings={setHeadings} />
           : <p className="muted empty-page">This page is empty. Click Edit to write it.</p>}
 
-        <AttachmentsPanel pageId={page.id} readOnlyReason={lockedByOther ? `Checked out by ${co!.displayName}` : undefined} />
+        {page.changeRequests.open > 0 && (
+          <section className="page-crs" aria-label="Change requests">
+            <h2>Change requests <span className="badge">{page.changeRequests.open} open</span></h2>
+            {openCrs.data && <ChangeRequestList items={openCrs.data} showPage={false} empty="" />}
+          </section>
+        )}
+
+        <AttachmentsPanel pageId={page.id} readOnlyReason={lockedByOther ? `Checked out by ${co!.displayName}` : undefined}
+          removeBlockedReason={!page.canEdit ? `Only ${page.owner.displayName} or an admin can remove files from a locked page` : undefined} />
 
         {backlinks.data && backlinks.data.length > 0 && (
           <section className="backlinks" aria-label="Linked from">
@@ -174,6 +245,7 @@ export function PageView() {
       {dialog === 'move' && <MoveDialog page={page} onClose={() => setDialog(null)} />}
       {dialog === 'delete' && <DeleteDialog page={page} onClose={() => setDialog(null)} />}
       {dialog === 'review' && <ReviewDialog page={page} onClose={() => setDialog(null)} />}
+      {dialog === 'owner' && <OwnerDialog page={page} onClose={() => setDialog(null)} />}
       {newChild && <NewPageDialog spaceKey={page.spaceKey} parentId={page.id} parentTitle={page.title} onClose={() => setNewChild(false)} />}
     </div>
   );

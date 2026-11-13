@@ -12,7 +12,7 @@ import { idParam, parse } from '../lib/validate.js';
 import {
   blobPath, cleanFilename, contentDisposition, contentTypeFor, isInlineImage, isTextFile, storeUpload,
 } from '../lib/attachments.js';
-import { checkedOutConflict, checkoutIsLive } from '../lib/pages.js';
+import { assertCanEditDirectly, checkedOutConflict, checkoutIsLive } from '../lib/pages.js';
 import { getAppSettings } from '../lib/settings.js';
 import { indexAttachment } from '../lib/search.js';
 
@@ -109,7 +109,9 @@ export async function attachmentRoutes(app: FastifyInstance) {
     const user = requireUser(req);
     const { id } = parse(idParam, req.params);
     const a = await loadAttachment(id, user);
-    await pageForChange(a.pageId, user);
+    const p = await pageForChange(a.pageId, user);
+    // Anyone may add files (e.g. a screenshot for a change request), but only the owner removes them from a locked page.
+    assertCanEditDirectly(p, user);
     await db.update(attachments).set({ removedAt: new Date(), removedBy: user.id }).where(eq(attachments.id, id));
     return { ok: true };
   });

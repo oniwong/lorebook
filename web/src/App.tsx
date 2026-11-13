@@ -14,6 +14,9 @@ import { AccountPage } from './pages/AccountPage';
 import { ErrorBox } from './components/ErrorBox';
 import { SearchPage } from './pages/SearchPage';
 import { StalePage } from './pages/StalePage';
+import { InboxPage } from './pages/InboxPage';
+import { ChangeRequestView } from './pages/ChangeRequestView';
+import { ChangeRequestEdit } from './pages/ChangeRequestEdit';
 
 /** Short internal links (/p/123) redirect to the page's canonical URL. */
 function ShortLink() {
@@ -37,6 +40,7 @@ export function App() {
   return (
     <Routes>
       <Route path="/p/:id/edit" element={<PageEdit />} />
+      <Route path="/cr/:id/edit" element={<ChangeRequestEdit />} />
       <Route element={<Layout />}>
         <Route index element={<HomePage />} />
         <Route path="/login" element={<Navigate to="/" replace />} />
@@ -48,6 +52,8 @@ export function App() {
         <Route path="/account" element={<AccountPage />} />
         <Route path="/search" element={<SearchPage />} />
         <Route path="/stale" element={<StalePage />} />
+        <Route path="/inbox" element={<InboxPage />} />
+        <Route path="/cr/:id" element={<ChangeRequestView />} />
         <Route path="*" element={<ErrorBox error={new Error('Page not found')} />} />
       </Route>
     </Routes>
