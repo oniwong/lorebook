@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ApiError, api, formatTime, pagePath, type Draft, type Page } from '../lib/api';
+import { ApiError, api, formatTime, pagePath, uploadAttachment, type Draft, type Page, type PageRef } from '../lib/api';
+import { checkRequiredSections } from '../lib/sections';
 import { useUser } from '../lib/session';
 import { MarkdownEditor } from '../components/MarkdownEditor';
 import { MarkdownView } from '../components/MarkdownView';
@@ -45,6 +46,7 @@ export function PageEdit() {
   const [mode, setMode] = useState<ViewMode>(loadMode);
   const [checkinOpen, setCheckinOpen] = useState(false);
   const [editorKey, setEditorKey] = useState(0);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   const current = useRef({ title: '', body: '' });
   const saved = useRef({ title: '', body: '' });
@@ -213,7 +215,18 @@ export function PageEdit() {
     navigate(p ? pagePath(p) : '/');
   };
 
+  const upload = useCallback(async (file: File, onProgress: (p: number) => void) => {
+    lastActivity.current = Date.now();
+    const a = await uploadAttachment(pageId, file, onProgress);
+    void qc.invalidateQueries({ queryKey: ['attachments', pageId] });
+    return a;
+  }, [pageId, qc]);
+
+  const searchPages = useCallback((q: string) => api.get<PageRef[]>(`/pages/quick?q=${encodeURIComponent(q)}`), []);
+
   const page = pageQ.data;
+  const required = page?.templateInfo.requiredSections ?? [];
+  const sectionCheck = required.length ? checkRequiredSections(preview, required) : null;
 
   if (status.kind === 'loading') return <div className="editor-shell"><p className="pad muted">Checking out…</p></div>;
   if (status.kind === 'blocked') {
@@ -274,9 +287,35 @@ export function PageEdit() {
         </div>
       )}
 
+      {uploadError && (
+        <div className="banner danger">Upload failed: {uploadError} <button className="link-btn" onClick={() => setUploadError(null)}>Dismiss</button></div>
+      )}
+      {sectionCheck && page && (
+        <div className={`section-status ${sectionCheck.missing.length || sectionCheck.empty.length ? 'todo' : 'ok'}`} aria-live="polite">
+          <span className="badge">{page.templateInfo.name}</span>
+          {sectionCheck.missing.length || sectionCheck.empty.length ? (
+            <>
+              {sectionCheck.missing.length > 0 && <span>Missing sections: <strong>{sectionCheck.missing.join(', ')}</strong></span>}
+              {sectionCheck.empty.length > 0 && <span>Still empty: <strong>{sectionCheck.empty.join(', ')}</strong></span>}
+              <span className="muted small">Required before check-in.</span>
+            </>
+          ) : <span>All required sections are filled in.</span>}
+        </div>
+      )}
+
       <div className={`editor-panes mode-${mode}`}>
         <div className="pane pane-editor">
-          {draft && <MarkdownEditor key={editorKey} initialValue={draft.body} onChange={onBody} onScrollRatio={mode === 'split' ? onScrollRatio : undefined} />}
+          {draft && (
+            <MarkdownEditor
+              key={editorKey}
+              initialValue={draft.body}
+              onChange={onBody}
+              onScrollRatio={mode === 'split' ? onScrollRatio : undefined}
+              upload={upload}
+              onUploadError={setUploadError}
+              searchPages={searchPages}
+            />
+          )}
         </div>
         <div className="pane pane-preview">
           <div className="preview-inner">
@@ -288,6 +327,8 @@ export function PageEdit() {
 
       {checkinOpen && (
         <CheckinDialog
+          page={page}
+          canChangeTemplate={!!page && (page.owner.id === user.id || user.role === 'admin')}
           pageId={pageId}
           title={title}
           body={body}
@@ -299,6 +340,7 @@ export function PageEdit() {
             await qc.invalidateQueries({ queryKey: ['tree'] });
             await qc.invalidateQueries({ queryKey: ['drafts'] });
             await qc.invalidateQueries({ queryKey: ['recent'] });
+            await qc.invalidateQueries({ queryKey: ['backlinks'] });
             const p = await api.get<Page>(`/pages/${pageId}`);
             navigate(pagePath(p));
           }}
@@ -308,12 +350,14 @@ export function PageEdit() {
   );
 }
 
-function CheckinDialog({ pageId, title, body, stale, onClose, onDone }: {
+function CheckinDialog({ page, canChangeTemplate, pageId, title, body, stale, onClose, onDone }: {
+  page: Page | undefined; canChangeTemplate: boolean;
   pageId: number; title: string; body: string; stale: boolean; onClose: () => void; onDone: () => Promise<void>;
 }) {
   const [message, setMessage] = useState('');
   const [error, setError] = useState<unknown>(null);
   const [confirmOverwrite, setConfirmOverwrite] = useState(stale);
+  const [sections, setSections] = useState<{ missing: string[]; empty: string[] } | null>(null);
   const [busy, setBusy] = useState(false);
 
   const submit = async (overwriteNewer: boolean) => {
@@ -324,10 +368,44 @@ function CheckinDialog({ pageId, title, body, stale, onClose, onDone }: {
       await onDone();
     } catch (e) {
       if (e instanceof ApiError && e.code === 'stale_draft') setConfirmOverwrite(true);
+      else if (e instanceof ApiError && e.code === 'missing_sections') setSections({ missing: e.details.missing, empty: e.details.empty });
       else setError(e);
       setBusy(false);
     }
   };
+
+  const switchToBlank = async () => {
+    if (!confirm(`Switch this page from the ${page?.templateInfo.name ?? ''} template to Blank? Its sections will no longer be required.`)) return;
+    setBusy(true);
+    try {
+      await api.post(`/pages/${pageId}/template`, { template: 'blank' });
+      setSections(null);
+      await submit(confirmOverwrite);
+    } catch (e) {
+      setError(e);
+      setBusy(false);
+    }
+  };
+
+  if (sections) {
+    return (
+      <Modal title="Required sections missing" onClose={onClose}>
+        <div className="form">
+          <p>This page uses the <strong>{page?.templateInfo.name}</strong> template. Fill in these sections before checking in:</p>
+          <ul>
+            {sections.missing.map((s) => <li key={s}><strong>{s}</strong> <span className="muted">(heading missing)</span></li>)}
+            {sections.empty.map((s) => <li key={s}><strong>{s}</strong> <span className="muted">(empty)</span></li>)}
+          </ul>
+          <p className="muted small">Each one is a <code>## Heading</code> with some text under it.</p>
+          {error != null && <ErrorBox error={error} />}
+          <div className="form-actions">
+            {canChangeTemplate && <button type="button" disabled={busy} onClick={() => void switchToBlank()}>Switch page to Blank</button>}
+            <button type="button" className="primary" onClick={onClose}>Back to editing</button>
+          </div>
+        </div>
+      </Modal>
+    );
+  }
 
   return (
     <Modal title="Check in" onClose={onClose}>

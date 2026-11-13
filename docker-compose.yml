@@ -31,6 +31,8 @@ services:
       SESSION_IDLE_HOURS: ${SESSION_IDLE_HOURS:-12}
       MIN_FREE_DISK_MB: ${MIN_FREE_DISK_MB:-1024}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      NIGHTLY_HOUR: ${NIGHTLY_HOUR:-3}
+      TZ: ${TZ:-UTC}
     volumes:
       - ${DATA_DIR:-lorebook-data}:/data
 

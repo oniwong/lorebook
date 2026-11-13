@@ -1,12 +1,15 @@
 import { useEffect, useState } from 'react';
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, formatDateTime, formatTime, pagePath, timeAgo, type Page } from '../lib/api';
+import { api, formatDateTime, formatTime, pagePath, timeAgo, type Page, type PageRef } from '../lib/api';
 import { useUser } from '../lib/session';
 import type { Heading } from '../lib/markdown';
 import { MarkdownView } from '../components/MarkdownView';
 import { ErrorBox } from '../components/ErrorBox';
 import { NewPageDialog } from '../components/NewPageDialog';
+import { AttachmentsPanel } from '../components/AttachmentsPanel';
+import { MoveDialog } from '../components/MoveDialog';
+import { DeleteDialog } from '../components/DeleteDialog';
 
 export function PageView() {
   const { key, id, slug } = useParams();
@@ -17,7 +20,13 @@ export function PageView() {
   const [headings, setHeadings] = useState<Heading[]>([]);
   const [newChild, setNewChild] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [dialog, setDialog] = useState<'move' | 'delete' | null>(null);
   const q = useQuery({ queryKey: ['page', pageId], queryFn: () => api.get<Page>(`/pages/${pageId}`), refetchInterval: 30_000 });
+  const backlinks = useQuery({
+    queryKey: ['backlinks', pageId],
+    queryFn: () => api.get<PageRef[]>(`/pages/${pageId}/backlinks`),
+    enabled: !!q.data,
+  });
 
   useEffect(() => setHeadings([]), [pageId]);
 
@@ -96,15 +105,31 @@ export function PageView() {
             <button onClick={() => setNewChild(true)}>Add subpage</button>
             <button onClick={() => void copyLink()}>{copied ? 'Copied' : 'Copy link'}</button>
             <button onClick={exportMd}>Export .md</button>
+            <button disabled={!!lockedByOther} title={lockedByOther ? `Checked out by ${co!.displayName}` : 'Move this page and its subpages'} onClick={() => setDialog('move')}>Move</button>
+            <button disabled={!!lockedByOther} title={lockedByOther ? `Checked out by ${co!.displayName}` : 'Move to the trash'} onClick={() => setDialog('delete')}>Delete</button>
           </div>
         </header>
         <div className="page-meta muted small">
+          {page.template !== 'blank' && <span className="badge template-badge" title={page.templateInfo.requiredSections.length ? `Required sections: ${page.templateInfo.requiredSections.join(', ')}` : undefined}>{page.templateInfo.name}</span>}{' '}
           Owner {page.owner.displayName}{!page.owner.active && ' (former user)'} · Updated {formatDateTime(page.updatedAt)} by {page.updatedBy.displayName}
         </div>
 
         {page.body.trim()
           ? <MarkdownView source={page.body} onHeadings={setHeadings} />
           : <p className="muted empty-page">This page is empty. Click Edit to write it.</p>}
+
+        <AttachmentsPanel pageId={page.id} readOnlyReason={lockedByOther ? `Checked out by ${co!.displayName}` : undefined} />
+
+        {backlinks.data && backlinks.data.length > 0 && (
+          <section className="backlinks" aria-label="Linked from">
+            <h2>Linked from</h2>
+            <ul className="plain-list">
+              {backlinks.data.map((b) => (
+                <li key={b.id}><Link to={pagePath(b)}>{b.title}</Link> <span className="muted small">in {b.spaceName}</span></li>
+              ))}
+            </ul>
+          </section>
+        )}
       </article>
       {headings.length > 1 && (
         <aside className="outline">
@@ -118,6 +143,8 @@ export function PageView() {
           </ul>
         </aside>
       )}
+      {dialog === 'move' && <MoveDialog page={page} onClose={() => setDialog(null)} />}
+      {dialog === 'delete' && <DeleteDialog page={page} onClose={() => setDialog(null)} />}
       {newChild && <NewPageDialog spaceKey={page.spaceKey} parentId={page.id} parentTitle={page.title} onClose={() => setNewChild(false)} />}
     </div>
   );

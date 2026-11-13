@@ -1,6 +1,8 @@
 import { useState, type FormEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, formatDateTime, type Space } from '../lib/api';
+import { api, formatDateTime, type AppSettings, type Space } from '../lib/api';
+import { TemplatesAdmin } from './AdminTemplates';
+import { TrashAdmin } from './AdminTrash';
 import { useUser } from '../lib/session';
 import { ErrorBox } from '../components/ErrorBox';
 import { Modal } from '../components/Modal';
@@ -16,6 +18,9 @@ export function AdminPage() {
       <h1>Admin</h1>
       <SpacesAdmin />
       <UsersAdmin />
+      <TemplatesAdmin />
+      <TrashAdmin />
+      <SettingsAdmin />
     </div>
   );
 }
@@ -40,14 +45,28 @@ function SpacesAdmin() {
     }
   };
 
+  const removeSpace = async (s: Space) => {
+    if (!confirm(`Delete the empty Space “${s.name}”?`)) return;
+    setError(null);
+    try {
+      await api.del(`/spaces/${s.key}`);
+      await qc.invalidateQueries({ queryKey: ['spaces'] });
+    } catch (err) {
+      setError(err);
+    }
+  };
+
   return (
     <section className="card">
       <h2>Spaces</h2>
       <table className="data-table">
-        <thead><tr><th>Key</th><th>Name</th><th>Description</th><th>Pages</th></tr></thead>
+        <thead><tr><th>Key</th><th>Name</th><th>Description</th><th>Pages</th><th /></tr></thead>
         <tbody>
           {spaces.data?.map((s) => (
-            <tr key={s.id}><td><code>{s.key}</code></td><td>{s.name}</td><td className="muted">{s.description}</td><td>{s.pageCount}</td></tr>
+            <tr key={s.id}>
+              <td><code>{s.key}</code></td><td>{s.name}</td><td className="muted">{s.description}</td><td>{s.pageCount}</td>
+              <td>{s.pageCount === 0 && <button className="small" onClick={() => void removeSpace(s)}>Delete</button>}</td>
+            </tr>
           ))}
         </tbody>
       </table>
@@ -180,5 +199,43 @@ function ResetPassword({ user, onClose }: { user: AdminUser; onClose: () => void
         </div>
       </form>
     </Modal>
+  );
+}
+
+function SettingsAdmin() {
+  const qc = useQueryClient();
+  const settings = useQuery({ queryKey: ['settings'], queryFn: () => api.get<AppSettings>('/settings') });
+  const [cap, setCap] = useState<string | null>(null);
+  const [error, setError] = useState<unknown>(null);
+  const [saved, setSaved] = useState(false);
+  const value = cap ?? (settings.data?.uploadMaxMb?.toString() ?? '');
+
+  const save = async (e: FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    try {
+      await api.patch('/settings', { uploadMaxMb: value ? Number(value) : null });
+      await qc.invalidateQueries({ queryKey: ['settings'] });
+      setCap(null);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (err) {
+      setError(err);
+    }
+  };
+
+  return (
+    <section className="card">
+      <h2>Settings</h2>
+      <form className="form inline-form" onSubmit={save}>
+        <label>
+          Upload limit per file (MB)
+          <input type="number" min={1} value={value} placeholder="No limit" onChange={(e) => setCap(e.target.value)} />
+        </label>
+        <button className="primary" type="submit">{saved ? 'Saved' : 'Save'}</button>
+      </form>
+      <p className="muted small">Leave empty for no limit. The <code>/readyz</code> health check reports when free disk space runs low.</p>
+      {error != null && <ErrorBox error={error} />}
+    </section>
   );
 }

@@ -10,7 +10,14 @@ import { join, extname } from 'node:path';
 
 const root = process.argv[2] ?? 'web/dist';
 const NAMESPACE_HOSTS = new Set(['www.w3.org']);
-const JS_ALLOWED_HOSTS = new Set([...NAMESPACE_HOSTS, 'react.dev', 'reactrouter.com', 'localhost']);
+// Hosts that only appear inside library error messages, doc links and XML namespace strings. They are
+// never fetched (and the Content-Security-Policy's connect-src 'self' would block it if they were).
+// Mermaid's parsers (chevrotain, langium), its ELK layout engine (eclipse.org namespaces) and the bundler
+// account for most of them.
+const JS_ALLOWED_HOSTS = new Set([
+  ...NAMESPACE_HOSTS, 'react.dev', 'reactrouter.com', 'localhost',
+  'github.com', 'chevrotain.io', 'langium.org', 'www.eclipse.org', 'en.wikipedia.org', 'rolldown.rs',
+]);
 const urlRe = /\b(?:https?:)?\/\/([a-z0-9-]+(?:\.[a-z0-9-]+)+|localhost)(?=[/:"'`)\s])/gi;
 
 function* walk(dir) {

@@ -61,6 +61,15 @@ Sign in at `BASE_URL`, open **Admin**, create Spaces and add user accounts. Keep
 local admin account even after LDAP arrives, so you can sign in when the domain controllers are
 unreachable.
 
+## Nightly jobs
+
+Once a day at `NIGHTLY_HOUR` (default 3, in the container's `TZ`) the app purges pages that have been
+in the trash for more than 30 days and deletes attachment files that nothing references any more. To
+run them immediately: `docker compose exec app lorebook nightly`.
+
+Attachments live in `/data/attachments`, named by their SHA-256. They are never changed in place, so
+the backup tool can copy that folder while Lorebook is running.
+
 ## Health checks
 
 - `GET /healthz`: the app process is up
