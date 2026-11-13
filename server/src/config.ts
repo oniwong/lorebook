@@ -6,13 +6,21 @@ function int(name: string, def: number): number {
   return n;
 }
 
+/**
+ * Whether the session cookie gets the Secure flag. On by default; COOKIE_SECURE=false (or 0/no/off)
+ * turns it off for plain-HTTP testing, where browsers would otherwise drop the cookie and sign-in
+ * silently fails. docker-compose.http.yml sets it.
+ */
+export function parseCookieSecure(v: string | undefined): boolean {
+  return !['false', '0', 'no', 'off'].includes((v ?? '').trim().toLowerCase());
+}
+
 export const config = {
   port: int('PORT', 3000),
   host: process.env.HOST ?? '0.0.0.0',
   databaseUrl: process.env.DATABASE_URL ?? 'postgres://lorebook:lorebook@localhost:5432/lorebook',
   baseUrl: process.env.BASE_URL ?? 'https://localhost',
-  // Set COOKIE_SECURE=false only for local development over plain HTTP.
-  cookieSecure: (process.env.COOKIE_SECURE ?? 'true') !== 'false',
+  cookieSecure: parseCookieSecure(process.env.COOKIE_SECURE),
   sessionIdleHours: int('SESSION_IDLE_HOURS', 12),
   checkoutTimeoutMinutes: int('CHECKOUT_TIMEOUT_MINUTES', 120),
   webDist: process.env.WEB_DIST ?? new URL('../../web/dist', import.meta.url).pathname,

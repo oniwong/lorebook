@@ -27,6 +27,34 @@ docker compose exec app lorebook create-admin
 
 Then open https://localhost, sign in, and create a Space under **Admin**.
 
+### Running without a certificate (testing only)
+
+For trying Lorebook at home or in a lab, it can run over plain HTTP with no certificate at all.
+Add these lines to `.env`:
+
+```sh
+COMPOSE_FILE=docker-compose.yml:docker-compose.http.yml
+BASE_URL=http://localhost:8080    # or http://<this machine's IP>:8080 to reach it from other devices
+HTTP_PORT=8080
+```
+
+then `docker compose up -d --build` and open the `BASE_URL`. `TLS_DIR` is not needed. Every other
+`docker compose` command works unchanged, because Compose reads `COMPOSE_FILE` from `.env`.
+
+What the HTTP layer changes ([docker-compose.http.yml](docker-compose.http.yml)): nginx uses
+[deploy/nginx/lorebook-http.conf](deploy/nginx/lorebook-http.conf), which serves the app on port 80
+inside the container with no redirect to HTTPS and publishes only `HTTP_PORT`; and the app gets
+`COOKIE_SECURE=false`, because browsers refuse to store a cookie marked Secure over HTTP, so sign-in
+would otherwise fail without an error. The app logs a warning at start-up while this is on. It needs
+Docker Compose 2.24 or newer.
+
+Do not use this mode in production: passwords and session cookies cross the network unencrypted.
+Delete the `COMPOSE_FILE` line (and set `BASE_URL` back to `https://…`) to return to HTTPS, which
+stays the default.
+
+Copying a page link uses the browser clipboard, which browsers only allow on HTTPS or `localhost`;
+from another device over HTTP, Lorebook shows the link in a box to copy by hand instead.
+
 ## Development
 
 Requirements: Node 22 and PostgreSQL 16.
@@ -54,7 +82,7 @@ npm run dev:web                                        # UI on :5173, proxies /a
 server/            Fastify API (TypeScript), Drizzle schema + SQL migrations, CLI
   src/lib/pages.ts   check-out, drafts, check-in, revisions: the core editing rules
 web/               React + Vite UI, CodeMirror 6 editor, remark/rehype + Shiki rendering
-deploy/nginx/      TLS reverse proxy config
+deploy/nginx/      reverse proxy config: TLS (lorebook.conf) and plain-HTTP testing (lorebook-http.conf)
 scripts/           offline check, release tarball, dev certificate
 ```
 

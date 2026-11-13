@@ -9,6 +9,12 @@ import { maybeSweepInbox } from './lib/inbox.js';
 
 async function main() {
   const app = await buildApp();
+  const plainHttp = config.baseUrl.toLowerCase().startsWith('http://');
+  if (!config.cookieSecure) {
+    app.log.warn('COOKIE_SECURE=false: session cookies work over plain HTTP. Use this for testing only, never in production.');
+  } else if (plainHttp) {
+    app.log.warn('BASE_URL is http:// but session cookies are Secure-only, so browsers will refuse to sign in. Set COOKIE_SECURE=false (docker-compose.http.yml does this) or use HTTPS.');
+  }
   try {
     await runMigrations();
   } catch (e) {

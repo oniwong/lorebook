@@ -1,0 +1,22 @@
+# Plain-HTTP mode, for testing without a certificate. NOT for production.
+# Turn it on by adding these lines to .env (then `docker compose up -d` as usual):
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.http.yml
+#   BASE_URL=http://localhost:8080
+#   HTTP_PORT=8080
+# Remove the COMPOSE_FILE line to go back to HTTPS. Needs Docker Compose 2.24 or newer (for !override).
+
+services:
+  app:
+    environment:
+      # Browsers drop cookies marked Secure on plain HTTP, so sign-in would silently fail.
+      COOKIE_SECURE: "false"
+
+  nginx:
+    # Only the HTTP port; nothing listens on 443 in this mode.
+    ports: !override
+      - "${HTTP_PORT:-80}:80"
+    volumes:
+      # Replaces the TLS config (same target path).
+      - ./deploy/nginx/lorebook-http.conf:/etc/nginx/conf.d/default.conf:ro
+      # Replaces the certificate mount so no TLS_DIR is needed; nothing reads it in this mode.
+      - ./deploy/nginx:/etc/nginx/tls:ro
