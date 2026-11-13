@@ -244,6 +244,31 @@ export function PageEdit() {
   if (status.kind === 'blocked') {
     const e = status.error;
     const co = e instanceof ApiError ? e.details?.checkout : null;
+    if (e instanceof ApiError && e.code === 'locked' && page) {
+      const suggest = async (fromDraft: boolean) => {
+        try {
+          const r = await api.post<{ id: number }>(`/pages/${pageId}/change-requests`, { fromDraft });
+          await qc.invalidateQueries({ queryKey: ['drafts'] });
+          navigate(`/cr/${r.id}/edit`);
+        } catch (err) {
+          setStatus({ kind: 'blocked', error: err as Error });
+        }
+      };
+      return (
+        <div className="editor-shell">
+          <div className="content">
+            <h1>🔒 This page is locked</h1>
+            <p>{page.owner.displayName} has locked “{page.title}”, so only they and admins can edit it directly. You can suggest a change instead, and they'll review it.</p>
+            {page.myDraft && <div className="banner info">You have a draft of this page from before it was locked. You can turn it into your suggestion so nothing is lost.</div>}
+            <div className="form-actions left">
+              {page.myDraft && <button className="primary" onClick={() => void suggest(true)}>Suggest my draft as a change</button>}
+              <button className={page.myDraft ? '' : 'primary'} onClick={() => void suggest(false)}>{page.myDraft ? 'Start a fresh suggestion' : 'Suggest change'}</button>
+              <Link className="button" to={pagePath(page)}>Back to the page</Link>
+            </div>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="editor-shell">
         <div className="content">

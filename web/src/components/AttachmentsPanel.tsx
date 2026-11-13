@@ -42,7 +42,7 @@ function TextPreview({ a }: { a: Attachment }) {
 }
 
 /** The page's attachment list, with upload, inline previews for images and text files, and download links. */
-export function AttachmentsPanel({ pageId, readOnlyReason }: { pageId: number; readOnlyReason?: string }) {
+export function AttachmentsPanel({ pageId, readOnlyReason, removeBlockedReason }: { pageId: number; readOnlyReason?: string; removeBlockedReason?: string }) {
   const qc = useQueryClient();
   const list = useQuery({ queryKey: ['attachments', pageId], queryFn: () => api.get<Attachment[]>(`/pages/${pageId}/attachments`) });
   const settings = useQuery({ queryKey: ['settings'], queryFn: () => api.get<AppSettings>('/settings'), staleTime: 60_000 });
@@ -144,7 +144,7 @@ export function AttachmentsPanel({ pageId, readOnlyReason }: { pageId: number; r
                 {(a.isText || a.isImage) && <button className="small" onClick={() => toggle(a.id)}>{open.has(a.id) ? 'Hide' : 'Preview'}</button>}
                 <a className="button small" href={`${a.url}?download=1`}>Download</a>
                 <button className="small" onClick={() => void copy(a)} title="Copy a Markdown link to paste into a page">{copied === a.id ? 'Copied' : 'Copy link'}</button>
-                <button className="small" onClick={() => void remove(a)} disabled={!!readOnlyReason} title={readOnlyReason}>Remove</button>
+                <button className="small" onClick={() => void remove(a)} disabled={!!(readOnlyReason ?? removeBlockedReason)} title={readOnlyReason ?? removeBlockedReason}>Remove</button>
                 {user.role === 'admin' && a.secretFindings.length > 0 && (
                   <button className="small danger" onClick={() => void purge(a)} title="Delete the file for good, including from older versions">Purge</button>
                 )}

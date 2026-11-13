@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { api, formatDay, pagePath, timeAgo, type Space, type StaleRow } from '../lib/api';
+import { api, formatDay, pagePath, timeAgo, type ChangeRequestSummary, type Space, type StaleRow } from '../lib/api';
+import { ChangeRequestList } from '../components/ChangeRequestList';
 import { ReviewBadge } from '../components/ReviewBadge';
 import { useUser } from '../lib/session';
 import { DraftList } from '../components/DraftList';
@@ -11,6 +12,11 @@ export function HomePage() {
   const user = useUser();
   const recent = useQuery({ queryKey: ['recent'], queryFn: () => api.get<Recent[]>('/pages/recent?limit=15') });
   const spaces = useQuery({ queryKey: ['spaces'], queryFn: () => api.get<Space[]>('/spaces') });
+  const toReview = useQuery({ queryKey: ['crs', 'toReview'], queryFn: () => api.get<ChangeRequestSummary[]>('/change-requests?toReview=1') });
+  const myCrs = useQuery({
+    queryKey: ['crs', 'mine'],
+    queryFn: () => api.get<ChangeRequestSummary[]>('/change-requests?mine=1&status=draft,open,changes_requested'),
+  });
   const stale = useQuery({ queryKey: ['stale', `mine-${user.id}`], queryFn: () => api.get<StaleRow[]>(`/stale?owner=${user.id}&includeDue=1`) });
 
   return (
@@ -39,6 +45,23 @@ export function HomePage() {
         <section className="card">
           <h2>My drafts</h2>
           <DraftList />
+        </section>
+        <section className="card">
+          <h2>Change requests</h2>
+          {!!toReview.data?.length && (
+            <>
+              <h3>Waiting for your review</h3>
+              <ChangeRequestList items={toReview.data.slice(0, 8)} empty="" />
+            </>
+          )}
+          {!!myCrs.data?.length && (
+            <>
+              <h3>Your pending requests</h3>
+              <ChangeRequestList items={myCrs.data.slice(0, 8)} empty="" />
+            </>
+          )}
+          {toReview.data?.length === 0 && myCrs.data?.length === 0 && <p className="muted">Nothing pending. Use “Suggest change” on a page to propose an edit for its owner to review.</p>}
+          {((toReview.data?.length ?? 0) > 8 || (myCrs.data?.length ?? 0) > 8) && <Link className="small" to="/inbox">All in the inbox →</Link>}
         </section>
         <section className="card">
           <h2>My pages to review</h2>

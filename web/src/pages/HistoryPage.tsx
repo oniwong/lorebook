@@ -8,7 +8,9 @@ import { ErrorBox } from '../components/ErrorBox';
 import { SecretFindings } from '../components/SecretFindings';
 import { useUser } from '../lib/session';
 
-const kindLabel: Record<RevisionSummary['kind'], string> = { create: 'Created', checkin: 'Edited', restore: 'Restored' };
+const kindLabel: Record<RevisionSummary['kind'], string> = {
+  create: 'Created', checkin: 'Edited', restore: 'Restored', change_request: 'Change request',
+};
 
 function useRevision(pageId: number, revId: number | null) {
   return useQuery({
@@ -97,7 +99,10 @@ export function HistoryPage() {
               <td><input type="radio" name="from" aria-label={`Compare from revision ${r.id}`} checked={from === r.id} onChange={() => setFrom(r.id)} /></td>
               <td><input type="radio" name="to" aria-label={`Compare to revision ${r.id}`} checked={to === r.id} onChange={() => setTo(r.id)} /></td>
               <td>#{revs.length - i} <span className="muted small">{kindLabel[r.kind]}{r.restoredFrom ? ` from #${revs.length - revs.findIndex((x) => x.id === r.restoredFrom)}` : ''}</span></td>
-              <td>{r.author.displayName}</td>
+              <td>
+                {r.author.displayName}
+                {r.approvedBy && <div className="muted small">approved by {r.approvedBy.displayName}{r.changeRequestId && <> · <Link to={`/cr/${r.changeRequestId}`}>request</Link></>}</div>}
+              </td>
               <td className="nowrap">{formatDateTime(r.createdAt)}</td>
               <td>
                 {r.message}{r.title !== revs[i + 1]?.title && i < revs.length - 1 && <span className="muted small"> (renamed “{r.title}”)</span>}

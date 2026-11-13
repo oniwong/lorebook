@@ -414,3 +414,46 @@ code.pattern { font-size: 0.78rem; overflow-wrap: anywhere; }
   .top-search { display: none; }
   .switcher-btn span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 }
+
+/* Milestone 4: locking, change requests, inbox */
+.topbar-right { display: flex; align-items: center; gap: 8px; }
+.bell { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 8px; color: var(--text); }
+.bell:hover { background: var(--bg-hover); text-decoration: none; }
+.bell-count { position: absolute; top: 2px; right: 0; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--danger); color: #fff; font-size: 0.7rem; font-weight: 600; line-height: 18px; text-align: center; }
+.lock-icon { font-size: 0.8em; margin-right: 8px; vertical-align: 2px; }
+.badge.cr-draft { background: var(--bg-hover); color: var(--muted); }
+.badge.cr-open { background: var(--info-bg); color: var(--accent); border: 1px solid var(--info-border); }
+.badge.cr-changes_requested { background: var(--warn-bg); color: inherit; border: 1px solid var(--warn-border); }
+.badge.cr-approved { background: var(--add-bg); color: inherit; border: 1px solid var(--add-strong); }
+.badge.cr-rejected { background: var(--danger-bg); color: var(--danger); border: 1px solid var(--danger-border); }
+.badge.cr-withdrawn { background: var(--bg-hover); color: var(--muted); }
+.cr-head h1 { margin-bottom: 4px; }
+.cr-head .badge:first-child { margin-left: 0; }
+.cr-description { border-left: 3px solid var(--border); padding: 0 0 0 14px; margin: 16px 0; }
+.cr-timeline { margin-top: 28px; }
+.timeline { list-style: none; padding: 0; margin: 0 0 16px; border-left: 2px solid var(--border); }
+.timeline .ev { padding: 6px 0 10px 16px; position: relative; }
+.timeline .ev::before { content: ''; position: absolute; left: -6px; top: 12px; width: 10px; height: 10px; border-radius: 50%; background: var(--border); }
+.timeline .ev-approved::before { background: #2e9d57; }
+.timeline .ev-rejected::before, .timeline .ev-changes_requested::before { background: var(--danger); }
+.ev-body { white-space: pre-wrap; margin-top: 4px; background: var(--bg-subtle); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; }
+.cr-actions textarea { width: 100%; }
+.form-actions.left { justify-content: flex-start; flex-wrap: wrap; }
+.rendered-diff { border: 1px solid var(--border); border-radius: 8px; padding: 8px 20px; }
+.page-crs { margin: 24px 0; }
+.page-crs h2 { font-size: 1.1rem; }
+.small-banner { font-size: 0.875rem; padding: 4px 12px; margin: 0; border-radius: 0; border-left: none; border-right: none; }
+.inbox-head { display: flex; align-items: center; gap: 16px; margin-top: 8px; }
+.inbox-head h2 { margin-right: auto; }
+.inbox-list { list-style: none; padding: 0; margin: 0 0 16px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.inbox-list li + li { border-top: 1px solid var(--border); }
+.inbox-item { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; text-align: left; border: none; border-radius: 0; background: var(--bg); padding: 10px 14px; color: var(--text); }
+.inbox-item:hover:not(:disabled) { background: var(--bg-hover); }
+.inbox-item:disabled { cursor: default; opacity: 1; }
+.unread .inbox-item { background: var(--info-bg); }
+.unread .inbox-text { font-weight: 600; }
+.unread .inbox-text::before { content: '● '; color: var(--accent); }
+.inbox-quote { color: var(--muted); font-style: italic; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+@media (max-width: 700px) {
+  .inbox-head { flex-wrap: wrap; gap: 8px; }
+}
