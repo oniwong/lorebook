@@ -1,15 +1,16 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { and, desc, eq, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { drafts, pages, revisions, spaces, users } from '../db/schema.js';
+import { drafts, pageLinks, pages, revisions, spaces, users } from '../db/schema.js';
 import { requireAdmin, requireUser } from '../lib/auth.js';
 import { notFound } from '../lib/errors.js';
 import { idParam, parse } from '../lib/validate.js';
 import {
   TITLE_MAX, breakCheckout, checkin, checkout, createPage, discard, getPage, heartbeat, listRevisions,
-  restoreRevision, saveDraft,
+  restoreRevision, saveDraft, setPageTemplate,
 } from '../lib/pages.js';
+import { movePage, subtreeCount, trashPage } from '../lib/tree.js';
 import { getSpaceByKey } from './spaces.js';
 
 const BODY_MAX = 2 * 1024 * 1024;
@@ -23,9 +24,10 @@ export async function pageRoutes(app: FastifyInstance) {
       parentId: z.number().int().positive().nullable().default(null),
       title: z.string().max(TITLE_MAX),
       body: z.string().max(BODY_MAX).optional(),
+      template: z.string().max(40).optional(),
     }), req.body);
     const space = await getSpaceByKey(body.spaceKey);
-    return createPage(user, { spaceId: space.id, parentId: body.parentId, title: body.title, body: body.body });
+    return createPage(user, { spaceId: space.id, parentId: body.parentId, title: body.title, body: body.body, template: body.template });
   });
 
   app.get('/pages/recent', async (req) => {
@@ -60,6 +62,19 @@ export async function pageRoutes(app: FastifyInstance) {
         desc(pages.updatedAt),
       )
       .limit(15);
+  });
+
+  /** Which of these page ids are live, with their titles. The page view uses it to mark broken links. */
+  app.get('/pages/lookup', async (req) => {
+    requireUser(req);
+    const { ids } = parse(z.object({ ids: z.string().max(2000).default('') }), req.query);
+    const list = [...new Set(ids.split(',').map(Number).filter((n) => Number.isInteger(n) && n > 0 && n < 2 ** 31))].slice(0, 200);
+    if (!list.length) return [];
+    return db
+      .select({ id: pages.id, title: pages.title, slug: pages.slug, spaceKey: spaces.key, spaceName: spaces.name })
+      .from(pages)
+      .innerJoin(spaces, eq(spaces.id, pages.spaceId))
+      .where(and(inArray(pages.id, list), isNull(pages.deletedAt)));
   });
 
   app.get('/pages/:id', async (req) => {
@@ -136,6 +151,55 @@ export async function pageRoutes(app: FastifyInstance) {
     const user = requireUser(req);
     const { id, revId } = parse(idParam.extend({ revId: z.coerce.number().int().positive() }), req.params);
     return restoreRevision(id, revId, user);
+  });
+
+  /** Pages that link to this one ("Linked from"). */
+  app.get('/pages/:id/backlinks', async (req) => {
+    requireUser(req);
+    const { id } = parse(idParam, req.params);
+    return db
+      .select({ id: pages.id, title: pages.title, slug: pages.slug, spaceKey: spaces.key, spaceName: spaces.name })
+      .from(pageLinks)
+      .innerJoin(pages, eq(pages.id, pageLinks.fromPageId))
+      .innerJoin(spaces, eq(spaces.id, pages.spaceId))
+      .where(and(eq(pageLinks.toPageId, id), isNull(pages.deletedAt)))
+      .orderBy(asc(pages.title));
+  });
+
+  app.post('/pages/:id/template', async (req) => {
+    const user = requireUser(req);
+    const { id } = parse(idParam, req.params);
+    const { template } = parse(z.object({ template: z.string().max(40) }), req.body);
+    await setPageTemplate(id, user, template);
+    return { ok: true, template };
+  });
+
+  /** How many pages a delete would send to the trash (the page plus its subpages). */
+  app.get('/pages/:id/subtree-count', async (req) => {
+    requireUser(req);
+    const { id } = parse(idParam, req.params);
+    return { count: await subtreeCount(id) };
+  });
+
+  app.post('/pages/:id/move', async (req) => {
+    const user = requireUser(req);
+    const { id } = parse(idParam, req.params);
+    const body = parse(z.object({
+      spaceKey: z.string(),
+      parentId: z.number().int().positive().nullable(),
+      index: z.number().int().min(0).nullable().optional(),
+    }), req.body);
+    const space = await getSpaceByKey(body.spaceKey);
+    const r = await movePage(id, user, { spaceId: space.id, parentId: body.parentId, index: body.index });
+    return { ...r, spaceKey: space.key };
+  });
+
+  app.delete('/pages/:id', async (req) => {
+    const user = requireUser(req);
+    const { id } = parse(idParam, req.params);
+    const r = await trashPage(id, user);
+    req.log.info({ event: 'page_deleted', by: user.id, pageId: id, count: r.count }, 'page moved to trash');
+    return r;
   });
 
   app.get('/me/drafts', async (req) => {

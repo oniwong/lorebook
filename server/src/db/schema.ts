@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import {
-  pgTable, serial, integer, text, timestamp, boolean, jsonb, primaryKey, index, uniqueIndex, type AnyPgColumn,
+  pgTable, serial, integer, bigint, text, timestamp, boolean, jsonb, primaryKey, index, uniqueIndex, type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 
 export const users = pgTable('users', {
@@ -51,6 +51,9 @@ export const pages = pgTable('pages', {
   checkedOutAt: timestamp('checked_out_at', { withTimezone: true }),
   checkoutHeartbeatAt: timestamp('checkout_heartbeat_at', { withTimezone: true }),
   deletedAt: timestamp('deleted_at', { withTimezone: true }),
+  deletedBy: integer('deleted_by').references(() => users.id),
+  // The page the user actually deleted; its whole subtree shares this id and is restored together.
+  trashRootId: integer('trash_root_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   createdBy: integer('created_by').notNull().references(() => users.id),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -58,6 +61,7 @@ export const pages = pgTable('pages', {
 }, (t) => [
   index('pages_space_parent_idx').on(t.spaceId, t.parentId, t.position),
   index('pages_updated_idx').on(t.updatedAt),
+  index('pages_trash_root_idx').on(t.trashRootId),
 ]);
 
 export const revisions = pgTable('revisions', {
@@ -82,3 +86,46 @@ export const drafts = pgTable('drafts', {
   status: text('status', { enum: ['active', 'expired', 'broken'] }).notNull().default('active'),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [primaryKey({ columns: [t.pageId, t.userId] })]);
+
+export const templates = pgTable('templates', {
+  id: serial('id').primaryKey(),
+  key: text('key').notNull().unique(),
+  name: text('name').notNull(),
+  description: text('description').notNull().default(''),
+  body: text('body').notNull().default(''),
+  requiredSections: text('required_sections').array().notNull().default(sql`'{}'::text[]`),
+  reviewIntervalMonths: integer('review_interval_months'),
+  builtin: boolean('builtin').notNull().default(false),
+  position: integer('position').notNull().default(100),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedBy: integer('updated_by').references(() => users.id),
+});
+
+/** One row per file attached to a page. The bytes live on disk, named by SHA-256 (see lib/attachments.ts). */
+export const attachments = pgTable('attachments', {
+  id: serial('id').primaryKey(),
+  pageId: integer('page_id').notNull().references(() => pages.id, { onDelete: 'cascade' }),
+  filename: text('filename').notNull(),
+  contentType: text('content_type').notNull(),
+  size: bigint('size', { mode: 'number' }).notNull(),
+  sha256: text('sha256').notNull(),
+  uploadedBy: integer('uploaded_by').notNull().references(() => users.id),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  // Removed from the page's list. The row (and file) stays so old revisions that link to it still work.
+  removedAt: timestamp('removed_at', { withTimezone: true }),
+  removedBy: integer('removed_by').references(() => users.id),
+}, (t) => [index('attachments_page_idx').on(t.pageId), index('attachments_sha_idx').on(t.sha256)]);
+
+/** Internal links between pages, extracted from the current body on every save. */
+export const pageLinks = pgTable('page_links', {
+  fromPageId: integer('from_page_id').notNull().references(() => pages.id, { onDelete: 'cascade' }),
+  // No foreign key: a link can point at a page that is trashed, purged or never existed.
+  toPageId: integer('to_page_id').notNull(),
+}, (t) => [primaryKey({ columns: [t.fromPageId, t.toPageId] }), index('page_links_to_idx').on(t.toPageId)]);
+
+/** Settings admins change at runtime, plus bookkeeping for the nightly jobs. */
+export const settings = pgTable('settings', {
+  key: text('key').primaryKey(),
+  value: jsonb('value').notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});

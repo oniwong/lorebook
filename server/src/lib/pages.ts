@@ -1,9 +1,11 @@
 import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { db, type Tx } from '../db/index.js';
-import { drafts, pages, revisions, spaces, users } from '../db/schema.js';
+import { drafts, pages, revisions, spaces, templates, users } from '../db/schema.js';
 import { config } from '../config.js';
-import { badRequest, conflict, forbidden, notFound } from './errors.js';
+import { HttpError, badRequest, conflict, forbidden, notFound } from './errors.js';
+import { checkRequiredSections } from './sections.js';
+import { syncLinks } from './links.js';
 import { slugify } from './slug.js';
 import type { SessionUser } from './auth.js';
 
@@ -45,7 +47,7 @@ export async function expireCheckouts(): Promise<number> {
   return res.rows[0]?.n ?? 0;
 }
 
-async function lockPage(tx: Tx, pageId: number): Promise<PageRow> {
+export async function lockPage(tx: Tx, pageId: number): Promise<PageRow> {
   const [p] = await tx.select().from(pages).where(eq(pages.id, pageId)).for('update');
   if (!p || p.deletedAt) throw notFound('Page not found');
   return p;
@@ -56,7 +58,7 @@ async function holderName(tx: Tx, userId: number): Promise<string> {
   return u?.displayName ?? 'someone';
 }
 
-async function checkedOutConflict(tx: Tx, p: PageRow) {
+export async function checkedOutConflict(tx: Tx, p: PageRow) {
   const name = await holderName(tx, p.checkedOutBy!);
   return conflict(`Checked out by ${name}`, {
     code: 'checked_out',
@@ -189,6 +191,19 @@ export async function checkin(
         code: 'stale_draft', baseRevisionId: draft.baseRevisionId, currentRevisionId: p.currentRevisionId,
       });
     }
+    const required = await requiredSectionsFor(tx, p.template);
+    if (required.length) {
+      const { missing, empty } = checkRequiredSections(input.body, required);
+      if (missing.length || empty.length) {
+        const parts = [
+          missing.length ? `missing: ${missing.join(', ')}` : '',
+          empty.length ? `empty: ${empty.join(', ')}` : '',
+        ].filter(Boolean);
+        throw new HttpError(422, `Required sections are ${parts.join('; ')}`, {
+          code: 'missing_sections', missing, empty, template: p.template,
+        });
+      }
+    }
     let revisionId: number | null = null;
     const now = new Date();
     if (title !== p.title || input.body !== p.body) {
@@ -199,6 +214,7 @@ export async function checkin(
       await tx.update(pages).set({
         title, slug: slugify(title), body: input.body, currentRevisionId: rev.id, updatedAt: now, updatedBy: user.id,
       }).where(eq(pages.id, pageId));
+      await syncLinks(tx, pageId, input.body);
     }
     await tx.update(pages).set({ checkedOutBy: null, checkedOutAt: null, checkoutHeartbeatAt: null })
       .where(eq(pages.id, pageId));
@@ -249,16 +265,20 @@ export async function restoreRevision(pageId: number, revisionId: number, user: 
       updatedAt: new Date(), updatedBy: user.id,
       checkedOutBy: null, checkedOutAt: null, checkoutHeartbeatAt: null,
     }).where(eq(pages.id, pageId));
+    await syncLinks(tx, pageId, rev.body);
     return { revisionId: created.id };
   });
 }
 
 export async function createPage(
   user: SessionUser,
-  input: { spaceId: number; parentId: number | null; title: string; body?: string },
+  input: { spaceId: number; parentId: number | null; title: string; body?: string; template?: string },
 ): Promise<{ id: number; slug: string }> {
   const title = validateTitle(input.title);
   return db.transaction(async (tx) => {
+    const templateKey = input.template ?? 'blank';
+    const [tpl] = await tx.select().from(templates).where(eq(templates.key, templateKey));
+    if (!tpl) throw badRequest(`Unknown template "${templateKey}"`);
     const [space] = await tx.select().from(spaces).where(eq(spaces.id, input.spaceId));
     if (!space) throw notFound('Space not found');
     if (input.parentId !== null) {
@@ -275,15 +295,16 @@ export async function createPage(
         input.parentId === null ? isNull(pages.parentId) : eq(pages.parentId, input.parentId),
       ));
     const slug = slugify(title);
-    const body = input.body ?? '';
+    const body = input.body ?? tpl.body;
     const [p] = await tx.insert(pages).values({
       spaceId: input.spaceId, parentId: input.parentId, position: Number(next), title, slug, body,
-      ownerId: user.id, createdBy: user.id, updatedBy: user.id,
+      template: tpl.key, ownerId: user.id, createdBy: user.id, updatedBy: user.id,
     }).returning({ id: pages.id });
     const [rev] = await tx.insert(revisions).values({
       pageId: p.id, title, body, authorId: user.id, kind: 'create', message: 'Created page',
     }).returning({ id: revisions.id });
     await tx.update(pages).set({ currentRevisionId: rev.id }).where(eq(pages.id, p.id));
+    await syncLinks(tx, p.id, body);
     return { id: p.id, slug };
   });
 }
@@ -301,12 +322,15 @@ export async function getPage(pageId: number, viewer: SessionUser) {
       ownerActive: owner.active,
       updatedByName: updater.displayName,
       holderName: holder.displayName,
+      templateName: templates.name,
+      requiredSections: templates.requiredSections,
     })
     .from(pages)
     .innerJoin(spaces, eq(spaces.id, pages.spaceId))
     .innerJoin(owner, eq(owner.id, pages.ownerId))
     .innerJoin(updater, eq(updater.id, pages.updatedBy))
     .leftJoin(holder, eq(holder.id, pages.checkedOutBy))
+    .leftJoin(templates, eq(templates.key, pages.template))
     .where(eq(pages.id, pageId));
   if (!row || row.page.deletedAt) throw notFound('Page not found');
   const p = row.page;
@@ -330,6 +354,7 @@ export async function getPage(pageId: number, viewer: SessionUser) {
     slug: p.slug,
     body: p.body,
     template: p.template,
+    templateInfo: { key: p.template, name: row.templateName ?? p.template, requiredSections: row.requiredSections ?? [] },
     currentRevisionId: p.currentRevisionId,
     owner: { id: p.ownerId, displayName: row.ownerName, active: row.ownerActive },
     createdAt: p.createdAt,
@@ -354,4 +379,21 @@ export async function listRevisions(pageId: number) {
     .innerJoin(users, eq(users.id, revisions.authorId))
     .where(eq(revisions.pageId, pageId))
     .orderBy(desc(revisions.id));
+}
+
+async function requiredSectionsFor(tx: Tx, templateKey: string): Promise<string[]> {
+  const [t] = await tx.select({ required: templates.requiredSections }).from(templates).where(eq(templates.key, templateKey));
+  return t?.required ?? [];
+}
+
+/** Switches a page to another template, e.g. to `blank` when a template's required sections don't fit. */
+export async function setPageTemplate(pageId: number, user: SessionUser, templateKey: string): Promise<void> {
+  await db.transaction(async (tx) => {
+    const p = await lockPage(tx, pageId);
+    if (p.ownerId !== user.id && user.role !== 'admin') throw forbidden('Only the page owner or an admin can change its template');
+    if (checkoutIsLive(p) && p.checkedOutBy !== user.id) throw await checkedOutConflict(tx, p);
+    const [t] = await tx.select({ key: templates.key }).from(templates).where(eq(templates.key, templateKey));
+    if (!t) throw badRequest(`Unknown template "${templateKey}"`);
+    await tx.update(pages).set({ template: t.key }).where(eq(pages.id, pageId));
+  });
 }

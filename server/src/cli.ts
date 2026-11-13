@@ -4,6 +4,7 @@ import { sql } from 'drizzle-orm';
 import { db, pool, runMigrations } from './db/index.js';
 import { users } from './db/schema.js';
 import { hashPassword, validatePassword } from './lib/passwords.js';
+import { runNightly } from './lib/jobs.js';
 
 function usage(): never {
   console.log(`Usage: lorebook <command>
@@ -12,7 +13,9 @@ Commands:
   create-admin [--username NAME] [--display-name NAME] [--password-stdin]
       Create a local admin account (or promote and reset an existing local one).
   migrate
-      Apply database migrations.`);
+      Apply database migrations.
+  nightly
+      Run the nightly jobs now: purge trash older than 30 days, delete unreferenced attachment files.`);
   process.exit(1);
 }
 
@@ -73,6 +76,11 @@ async function main() {
   try {
     if (cmd === 'create-admin') await createAdmin();
     else if (cmd === 'migrate') { await runMigrations(); console.log('Migrations applied.'); }
+    else if (cmd === 'nightly') {
+      await runMigrations();
+      const r = await runNightly();
+      console.log(`Purged ${r.trash.pages} page(s) from the trash; removed ${r.attachmentsGc.removed} unreferenced file(s) (${Math.round(r.attachmentsGc.bytes / 1024)} KB).`);
+    }
     else usage();
   } catch (e) {
     console.error(`Error: ${(e as Error).message}`);
