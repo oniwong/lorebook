@@ -1,0 +1,15 @@
+{
+  "name": "lorebook",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": ["server", "web"],
+  "scripts": {
+    "dev:server": "npm run dev -w server",
+    "dev:web": "npm run dev -w web",
+    "build": "npm run build -w web && npm run build -w server",
+    "test": "npm test -w server",
+    "typecheck": "npm run typecheck -w server && npm run typecheck -w web",
+    "check:offline": "node scripts/check-offline.mjs web/dist"
+  },
+  "engines": { "node": ">=22" }
+}
