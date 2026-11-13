@@ -4,11 +4,12 @@ A self-hosted knowledge base for IT and technical teams: runbooks, how-tos and a
 one searchable place, running fully offline on a single Linux VM. See [SPEC.md](SPEC.md) for the
 full design.
 
-**Status: milestone 2 (Content).** Local accounts, Spaces, the page tree, the Markdown editor with
-live preview, check-out editing, and revision history with diff and restore (milestone 1); plus
+**Status: milestone 3 (Find and trust).** Local accounts, Spaces, the page tree, the Markdown editor
+with live preview, check-out editing, and revision history with diff and restore (milestone 1);
 templates with required sections, attachments, Mermaid diagrams, internal links with backlinks, the
-trash, and moving pages (milestone 2). Later milestones add search, secret detection, review dates,
-change requests, LDAP and the rest (SPEC.md §16).
+trash, and moving pages (milestone 2); plus search with filters and exact matching of technical
+strings, tags, secret warnings, review dates and the stale pages list (milestone 3). Later milestones
+add locking, change requests and the inbox, then LDAP, the REST API and the rest (SPEC.md §16).
 
 ## Running it
 
@@ -74,6 +75,26 @@ scripts/           offline check, release tarball, dev certificate
 - **Trash**: deleting a page sends it and its subpages to the trash as one group. Admins restore or
   purge groups under **Admin**; groups older than 30 days are purged by the nightly job
   (`NIGHTLY_HOUR`, default 03:00 container time, or run `lorebook nightly` by hand).
+
+### Search, secrets and review dates
+
+- **Search** (`server/src/lib/search.ts`) is plain PostgreSQL: a weighted `tsvector` per page (title,
+  then headings and tags, then text, then code) for word search, and `pg_trgm` indexes on a lowercased,
+  accent-stripped copy of the text for substring matches, so `srv-db-01`, `10.20.30.41` or `0x80070005`
+  are found exactly. Text attachments under 5 MB are indexed too. The index columns are rebuilt in the
+  same transaction as every save. Pages from older versions, and every page after an admin changes the
+  search language, are re-indexed in the background by the housekeeping timer; `lorebook reindex`
+  rebuilds everything by hand.
+- **Secret detection** (`server/src/lib/secrets.ts`) is one dependency-free file that the editor uses as
+  well (`web/src/lib/secrets.ts` must stay an identical copy; a test checks). The editor underlines
+  matches as you type; check-in asks before saving them, and "Save anyway" flags the revision. Only
+  masked previews are stored. Admins tune rules and placeholder values, see the **Possible secrets**
+  report, and purge old revisions or files under **Admin**. `lorebook rescan-secrets` re-checks
+  everything after a rule change. Suppress a false alarm with `lorebook:ignore-secret` on the line
+  (e.g. `<!-- lorebook:ignore-secret -->`).
+- **Review dates**: new pages get a review-by date from their template's interval. The owner or an
+  admin changes or clears it, or marks the page reviewed (which moves the date forward). Overdue pages
+  show a banner, appear under **Stale pages** and on the owner's home page, and can be filtered in search.
 
 ### How check-out works
 

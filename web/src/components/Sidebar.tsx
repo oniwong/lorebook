@@ -131,6 +131,12 @@ export function Sidebar({ spaceKey, currentPageId }: { spaceKey?: string; curren
   return (
     <nav className="side-nav">
       <div className="side-section">
+        <ul className="space-list">
+          <li><NavLink to="/search" end>Search</NavLink></li>
+          <li><NavLink to="/stale">Stale pages</NavLink></li>
+        </ul>
+      </div>
+      <div className="side-section">
         <div className="side-heading">Spaces</div>
         <ul className="space-list">
           {spaces.data?.map((s) => (

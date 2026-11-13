@@ -5,6 +5,8 @@ import { ApiError, api, formatDateTime, pagePath, type Page, type Revision, type
 import { DiffView } from '../components/DiffView';
 import { MarkdownView } from '../components/MarkdownView';
 import { ErrorBox } from '../components/ErrorBox';
+import { SecretFindings } from '../components/SecretFindings';
+import { useUser } from '../lib/session';
 
 const kindLabel: Record<RevisionSummary['kind'], string> = { create: 'Created', checkin: 'Edited', restore: 'Restored' };
 
@@ -27,6 +29,8 @@ export function HistoryPage() {
   const [to, setTo] = useState<number | null>(null);
   const [mode, setMode] = useState<'split' | 'inline' | 'rendered'>('split');
   const [error, setError] = useState<unknown>(null);
+  const [openFlags, setOpenFlags] = useState<number | null>(null);
+  const user = useUser();
 
   const revs = revsQ.data ?? [];
   useEffect(() => {
@@ -59,6 +63,22 @@ export function HistoryPage() {
     }
   };
 
+  const purge = async (r: RevisionSummary, n: number) => {
+    if (!confirm(`Permanently delete revision #${n} from ${formatDateTime(r.createdAt)}? This can't be undone. Use it to remove a leaked secret from history.`)) return;
+    setError(null);
+    try {
+      await api.del(`/pages/${pageId}/revisions/${r.id}`);
+      const fresh = await revsQ.refetch();
+      if (fresh.data?.length) {
+        setTo(fresh.data[0].id);
+        setFrom(fresh.data[1]?.id ?? fresh.data[0].id);
+      }
+      await qc.invalidateQueries({ queryKey: ['admin-secrets'] });
+    } catch (e) {
+      setError(e);
+    }
+  };
+
   if (pageQ.error) return <div className="content"><ErrorBox error={pageQ.error} /></div>;
   if (!page) return null;
 
@@ -79,11 +99,25 @@ export function HistoryPage() {
               <td>#{revs.length - i} <span className="muted small">{kindLabel[r.kind]}{r.restoredFrom ? ` from #${revs.length - revs.findIndex((x) => x.id === r.restoredFrom)}` : ''}</span></td>
               <td>{r.author.displayName}</td>
               <td className="nowrap">{formatDateTime(r.createdAt)}</td>
-              <td>{r.message}{r.title !== revs[i + 1]?.title && i < revs.length - 1 && <span className="muted small"> (renamed “{r.title}”)</span>}</td>
+              <td>
+                {r.message}{r.title !== revs[i + 1]?.title && i < revs.length - 1 && <span className="muted small"> (renamed “{r.title}”)</span>}
+                {!!r.secretFindings?.length && (
+                  <>
+                    {' '}<button className={`badge secret-flag${r.secretsAcknowledged ? ' acked' : ''}`} onClick={() => setOpenFlags(openFlags === r.id ? null : r.id)}
+                      title={r.secretsAcknowledged ? 'Saved anyway despite a secret warning' : 'Possible secret found by a rescan'}>
+                      ⚠ possible secret{r.secretFindings.length > 1 ? `s (${r.secretFindings.length})` : ''}
+                    </button>
+                    {openFlags === r.id && <SecretFindings findings={r.secretFindings} />}
+                  </>
+                )}
+              </td>
               <td className="nowrap">
                 {r.id === page.currentRevisionId
                   ? <span className="badge">current</span>
                   : <button className="small" onClick={() => void restore(r)}>Restore</button>}
+                {user.role === 'admin' && r.id !== page.currentRevisionId && (
+                  <button className="small danger" title="Permanently delete this revision" onClick={() => void purge(r, revs.length - i)}>Purge</button>
+                )}
               </td>
             </tr>
           ))}

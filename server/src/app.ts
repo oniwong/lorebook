@@ -14,6 +14,8 @@ import { templateRoutes } from './routes/templates.js';
 import { attachmentRoutes } from './routes/attachments.js';
 import { trashRoutes } from './routes/trash.js';
 import { settingsRoutes } from './routes/settings.js';
+import { searchRoutes } from './routes/search.js';
+import { secretRoutes } from './routes/secrets.js';
 
 const UNSAFE = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const CSRF_EXEMPT = new Set(['/api/v1/auth/login']);
@@ -103,6 +105,8 @@ export async function buildApp(opts: { logger?: boolean } = {}): Promise<Fastify
   await app.register(attachmentRoutes, { prefix: '/api/v1' });
   await app.register(trashRoutes, { prefix: '/api/v1' });
   await app.register(settingsRoutes, { prefix: '/api/v1' });
+  await app.register(searchRoutes, { prefix: '/api/v1' });
+  await app.register(secretRoutes, { prefix: '/api/v1' });
 
   if (existsSync(config.webDist)) {
     await app.register(fastifyStatic, {

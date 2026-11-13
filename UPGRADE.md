@@ -26,6 +26,16 @@
 
    Migrations run automatically on start.
 
+## Notes for specific versions
+
+- **Milestone 3 (search):** the migration enables the `pg_trgm` and `unaccent` extensions. Both ship
+  inside the postgres image, so nothing is downloaded. After the upgrade, existing pages and text
+  attachments are indexed in the background (a few minutes for thousands of pages); search results
+  fill in as that runs. Existing pages get a review date from their template's interval, counted from
+  their last update, so some older runbooks may show up as needing review straight away. To re-check
+  old content for secrets, run `docker compose exec app lorebook rescan-secrets` or use **Rescan
+  everything** under Admin.
+
 ## Rolling back
 
 If the new version fails to start, set `LOREBOOK_VERSION` back to the previous version. If its

@@ -9,6 +9,8 @@ import { languages } from '@codemirror/language-data';
 import { syntaxHighlighting, defaultHighlightStyle, bracketMatching } from '@codemirror/language';
 import { autocompletion, completionKeymap, startCompletion, type CompletionContext, type CompletionResult } from '@codemirror/autocomplete';
 import type { PageRef } from '../lib/api';
+import type { SecretFinding, SecretScanConfig } from '../lib/secrets';
+import { secretLint } from './secretLint';
 
 export type UploadResult = { url: string; filename: string; isImage: boolean };
 
@@ -22,6 +24,9 @@ type Props = {
   onUploadError?: (message: string) => void;
   /** Title search for the `[[` link picker. */
   searchPages?: (q: string) => Promise<PageRef[]>;
+  /** Secret detection rules; possible secrets are underlined as you type. */
+  secretConfig?: SecretScanConfig | null;
+  onSecretFindings?: (findings: SecretFinding[]) => void;
 };
 
 let uploadSeq = 0;
@@ -150,7 +155,7 @@ const theme = EditorView.theme({
   '.cm-selectionBackground, &.cm-focused .cm-selectionBackground, ::selection': { backgroundColor: 'var(--selection) !important' },
 });
 
-export function MarkdownEditor({ initialValue, onChange, onScrollRatio, upload, onUploadError, searchPages }: Props) {
+export function MarkdownEditor({ initialValue, onChange, onScrollRatio, upload, onUploadError, searchPages, secretConfig, onSecretFindings }: Props) {
   const host = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -164,6 +169,10 @@ export function MarkdownEditor({ initialValue, onChange, onScrollRatio, upload, 
   uploadRef.current = upload;
   onUploadErrorRef.current = onUploadError;
   searchRef.current = searchPages;
+  const secretConfigRef = useRef(secretConfig ?? null);
+  const onSecretRef = useRef(onSecretFindings);
+  secretConfigRef.current = secretConfig ?? null;
+  onSecretRef.current = onSecretFindings;
 
   const startUploads = (view: EditorView, files: File[], pos: number) => {
     const up = uploadRef.current;
@@ -179,6 +188,7 @@ export function MarkdownEditor({ initialValue, onChange, onScrollRatio, upload, 
         doc: initialValue,
         extensions: [
           lineNumbers(),
+          secretLint(() => secretConfigRef.current, (f) => onSecretRef.current?.(f)),
           highlightActiveLine(),
           highlightActiveLineGutter(),
           drawSelection(),

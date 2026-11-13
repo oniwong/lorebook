@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, formatBytes, formatDateTime, uploadAttachment, type AppSettings, type Attachment } from '../lib/api';
 import { renderTextFile } from '../lib/markdown';
 import { ErrorBox } from './ErrorBox';
+import { useUser } from '../lib/session';
 
 function iconFor(a: Attachment): string {
   const n = a.filename.toLowerCase();
@@ -49,6 +50,8 @@ export function AttachmentsPanel({ pageId, readOnlyReason }: { pageId: number; r
   const [progress, setProgress] = useState<{ name: string; p: number } | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [copied, setCopied] = useState<number | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
+  const user = useUser();
   const input = useRef<HTMLInputElement>(null);
 
   const refresh = () => qc.invalidateQueries({ queryKey: ['attachments', pageId] });
@@ -58,13 +61,25 @@ export function AttachmentsPanel({ pageId, readOnlyReason }: { pageId: number; r
     for (const f of files) {
       try {
         setProgress({ name: f.name, p: 0 });
-        await uploadAttachment(pageId, f, (p) => setProgress({ name: f.name, p }));
+        const a = await uploadAttachment(pageId, f, (p) => setProgress({ name: f.name, p }));
+        if (a.warnings?.length) setWarning(`${a.filename} looks like it contains a password or key. Consider removing it and linking to the vault entry instead.`);
       } catch (e) {
         setError(e);
       }
     }
     setProgress(null);
     await refresh();
+  };
+
+  const purge = async (a: Attachment) => {
+    if (!confirm(`Permanently delete ${a.filename}? Older versions of the page that link to it will show a broken link. This can't be undone.`)) return;
+    setError(null);
+    try {
+      await api.del(`/attachments/${a.id}/purge`);
+      await refresh();
+    } catch (e) {
+      setError(e);
+    }
   };
 
   const remove = async (a: Attachment) => {
@@ -113,6 +128,7 @@ export function AttachmentsPanel({ pageId, readOnlyReason }: { pageId: number; r
         </div>
       )}
       {error != null && <ErrorBox error={error} />}
+      {warning && <div className="banner warn">{warning} <button className="link-btn" onClick={() => setWarning(null)}>Dismiss</button></div>}
       {items.length === 0 && !progress && <p className="muted small">No files yet. Drop files here, or paste screenshots straight into the editor.</p>}
       <ul className="att-list">
         {items.map((a) => (
@@ -120,12 +136,18 @@ export function AttachmentsPanel({ pageId, readOnlyReason }: { pageId: number; r
             <div className="att-row">
               <span className="att-icon" aria-hidden>{iconFor(a)}</span>
               <a href={a.url} target="_blank" rel="noopener" className="att-name">{a.filename}</a>
+              {a.secretFindings.length > 0 && (
+                <span className="badge secret-flag" title={a.secretFindings.map((f) => `Line ${f.line}: ${f.ruleName} — ${f.preview}`).join('\n')}>⚠ possible secret</span>
+              )}
               <span className="muted small nowrap">{formatBytes(a.size)} · {a.uploadedBy.displayName} · {formatDateTime(a.createdAt)}</span>
               <span className="att-actions">
                 {(a.isText || a.isImage) && <button className="small" onClick={() => toggle(a.id)}>{open.has(a.id) ? 'Hide' : 'Preview'}</button>}
                 <a className="button small" href={`${a.url}?download=1`}>Download</a>
                 <button className="small" onClick={() => void copy(a)} title="Copy a Markdown link to paste into a page">{copied === a.id ? 'Copied' : 'Copy link'}</button>
                 <button className="small" onClick={() => void remove(a)} disabled={!!readOnlyReason} title={readOnlyReason}>Remove</button>
+                {user.role === 'admin' && a.secretFindings.length > 0 && (
+                  <button className="small danger" onClick={() => void purge(a)} title="Delete the file for good, including from older versions">Purge</button>
+                )}
               </span>
             </div>
             {open.has(a.id) && (a.isImage

@@ -7,7 +7,10 @@ import { HttpError, badRequest, conflict, forbidden, notFound } from './errors.j
 import { checkRequiredSections } from './sections.js';
 import { syncLinks } from './links.js';
 import { slugify } from './slug.js';
+import { indexPage, REVIEW_DUE_DAYS } from './search.js';
+import { scanMarkdown, toStored } from './secretConfig.js';
 import type { SessionUser } from './auth.js';
+import type { SecretFinding } from './secrets.js';
 
 type PageRow = typeof pages.$inferSelect;
 
@@ -177,9 +180,17 @@ function validateTitle(title: string): string {
 export async function checkin(
   pageId: number,
   user: SessionUser,
-  input: { title: string; body: string; message?: string; overwriteNewer?: boolean },
-): Promise<{ revisionId: number | null }> {
+  input: {
+    title: string; body: string; message?: string; overwriteNewer?: boolean;
+    /** The user saw the secret warning and chose "Save anyway". */
+    secretsAcknowledged?: boolean;
+    /** Also mark the page as reviewed (owner or admin). */
+    markReviewed?: boolean;
+  },
+): Promise<{ revisionId: number | null; secretFindings: SecretFinding[] }> {
   const title = validateTitle(input.title);
+  // Scanned before the transaction: it reads settings and is pure CPU work.
+  const findings = await scanMarkdown(input.body);
   return db.transaction(async (tx) => {
     let p = await lockPage(tx, pageId);
     await assertNotBroken(tx, p, user);
@@ -204,22 +215,38 @@ export async function checkin(
         });
       }
     }
+    const changed = title !== p.title || input.body !== p.body;
+    if (changed && findings.length && !input.secretsAcknowledged) {
+      throw new HttpError(422, `This page looks like it contains ${findings.length === 1 ? 'a secret' : `${findings.length} secrets`}`, {
+        code: 'possible_secrets', findings,
+      });
+    }
     let revisionId: number | null = null;
     const now = new Date();
-    if (title !== p.title || input.body !== p.body) {
+    if (changed) {
       const [rev] = await tx.insert(revisions).values({
         pageId, title, body: input.body, authorId: user.id, kind: 'checkin', message: input.message?.trim() ?? '',
+        secretFindings: toStored(findings), secretsAcknowledged: findings.length > 0,
       }).returning({ id: revisions.id });
       revisionId = rev.id;
       await tx.update(pages).set({
         title, slug: slugify(title), body: input.body, currentRevisionId: rev.id, updatedAt: now, updatedBy: user.id,
       }).where(eq(pages.id, pageId));
       await syncLinks(tx, pageId, input.body);
+      await indexPage(tx, pageId);
+    }
+    if (input.markReviewed && (p.ownerId === user.id || user.role === 'admin')) {
+      await tx.execute(sql`
+        update pages set reviewed_at = now(), reviewed_by = ${user.id},
+          review_by = case when review_by is null then null else (current_date + make_interval(months => coalesce(
+            (select review_interval_months from templates where key = pages.template),
+            coalesce((select (value #>> '{}')::int from settings where key = 'defaultReviewMonths'), 12))))::date end
+        where id = ${pageId}`);
     }
     await tx.update(pages).set({ checkedOutBy: null, checkedOutAt: null, checkoutHeartbeatAt: null })
       .where(eq(pages.id, pageId));
     await tx.delete(drafts).where(and(eq(drafts.pageId, pageId), eq(drafts.userId, user.id)));
-    return { revisionId };
+    return { revisionId, secretFindings: findings };
   });
 }
 
@@ -256,9 +283,11 @@ export async function restoreRevision(pageId: number, revisionId: number, user: 
     const [rev] = await tx.select().from(revisions).where(and(eq(revisions.id, revisionId), eq(revisions.pageId, pageId)));
     if (!rev) throw notFound('Revision not found');
     if (rev.id === p.currentRevisionId) throw badRequest('That revision is already the current version');
+    const findings = await scanMarkdown(rev.body);
     const [created] = await tx.insert(revisions).values({
       pageId, title: rev.title, body: rev.body, authorId: user.id, kind: 'restore',
       message: `Restored revision ${rev.id}`, restoredFrom: rev.id,
+      secretFindings: toStored(findings), secretsAcknowledged: findings.length > 0,
     }).returning({ id: revisions.id });
     await tx.update(pages).set({
       title: rev.title, slug: slugify(rev.title), body: rev.body, currentRevisionId: created.id,
@@ -266,15 +295,17 @@ export async function restoreRevision(pageId: number, revisionId: number, user: 
       checkedOutBy: null, checkedOutAt: null, checkoutHeartbeatAt: null,
     }).where(eq(pages.id, pageId));
     await syncLinks(tx, pageId, rev.body);
+    await indexPage(tx, pageId);
     return { revisionId: created.id };
   });
 }
 
 export async function createPage(
   user: SessionUser,
-  input: { spaceId: number; parentId: number | null; title: string; body?: string; template?: string },
+  input: { spaceId: number; parentId: number | null; title: string; body?: string; template?: string; tags?: string[] },
 ): Promise<{ id: number; slug: string }> {
   const title = validateTitle(input.title);
+  const findings = input.body ? await scanMarkdown(input.body) : [];
   return db.transaction(async (tx) => {
     const templateKey = input.template ?? 'blank';
     const [tpl] = await tx.select().from(templates).where(eq(templates.key, templateKey));
@@ -298,13 +329,16 @@ export async function createPage(
     const body = input.body ?? tpl.body;
     const [p] = await tx.insert(pages).values({
       spaceId: input.spaceId, parentId: input.parentId, position: Number(next), title, slug, body,
-      template: tpl.key, ownerId: user.id, createdBy: user.id, updatedBy: user.id,
+      template: tpl.key, ownerId: user.id, createdBy: user.id, updatedBy: user.id, tags: input.tags ?? [],
+      reviewBy: tpl.reviewIntervalMonths ? sql`(current_date + make_interval(months => ${tpl.reviewIntervalMonths}))::date` : null,
     }).returning({ id: pages.id });
     const [rev] = await tx.insert(revisions).values({
       pageId: p.id, title, body, authorId: user.id, kind: 'create', message: 'Created page',
+      secretFindings: toStored(findings), secretsAcknowledged: findings.length > 0,
     }).returning({ id: revisions.id });
     await tx.update(pages).set({ currentRevisionId: rev.id }).where(eq(pages.id, p.id));
     await syncLinks(tx, p.id, body);
+    await indexPage(tx, p.id);
     return { id: p.id, slug };
   });
 }
@@ -313,6 +347,7 @@ export async function getPage(pageId: number, viewer: SessionUser) {
   const owner = alias(users, 'owner');
   const updater = alias(users, 'updater');
   const holder = alias(users, 'holder');
+  const reviewer = alias(users, 'reviewer');
   const [row] = await db
     .select({
       page: pages,
@@ -324,6 +359,10 @@ export async function getPage(pageId: number, viewer: SessionUser) {
       holderName: holder.displayName,
       templateName: templates.name,
       requiredSections: templates.requiredSections,
+      reviewedByName: reviewer.displayName,
+      reviewStatus: sql<string>`case when ${pages.reviewBy} is null then 'none' when ${pages.reviewBy} < current_date then 'overdue'
+        when ${pages.reviewBy} <= current_date + ${REVIEW_DUE_DAYS}::int then 'due' else 'ok' end`,
+      currentFindings: revisions.secretFindings,
     })
     .from(pages)
     .innerJoin(spaces, eq(spaces.id, pages.spaceId))
@@ -331,6 +370,8 @@ export async function getPage(pageId: number, viewer: SessionUser) {
     .innerJoin(updater, eq(updater.id, pages.updatedBy))
     .leftJoin(holder, eq(holder.id, pages.checkedOutBy))
     .leftJoin(templates, eq(templates.key, pages.template))
+    .leftJoin(reviewer, eq(reviewer.id, pages.reviewedBy))
+    .leftJoin(revisions, eq(revisions.id, pages.currentRevisionId))
     .where(eq(pages.id, pageId));
   if (!row || row.page.deletedAt) throw notFound('Page not found');
   const p = row.page;
@@ -365,6 +406,15 @@ export async function getPage(pageId: number, viewer: SessionUser) {
       : null,
     myDraft: myDraft ?? null,
     breadcrumbs: crumbs.rows,
+    tags: p.tags,
+    review: {
+      reviewBy: p.reviewBy,
+      status: row.reviewStatus,
+      lastReviewedAt: p.reviewedAt ?? p.createdAt,
+      reviewedBy: p.reviewedBy ? { id: p.reviewedBy, displayName: row.reviewedByName ?? '' } : null,
+    },
+    /** Masked secret findings in the current version, so the page view can nudge people to fix it. */
+    secretFindings: row.currentFindings ?? [],
   };
 }
 
@@ -374,6 +424,7 @@ export async function listRevisions(pageId: number) {
       id: revisions.id, title: revisions.title, kind: revisions.kind, message: revisions.message,
       restoredFrom: revisions.restoredFrom, createdAt: revisions.createdAt,
       author: { id: users.id, displayName: users.displayName },
+      secretFindings: revisions.secretFindings, secretsAcknowledged: revisions.secretsAcknowledged,
     })
     .from(revisions)
     .innerJoin(users, eq(users.id, revisions.authorId))
@@ -395,5 +446,24 @@ export async function setPageTemplate(pageId: number, user: SessionUser, templat
     const [t] = await tx.select({ key: templates.key }).from(templates).where(eq(templates.key, templateKey));
     if (!t) throw badRequest(`Unknown template "${templateKey}"`);
     await tx.update(pages).set({ template: t.key }).where(eq(pages.id, pageId));
+  });
+}
+
+/**
+ * Permanently deletes one revision (spec §5), e.g. one that contains a leaked secret. The current revision
+ * can't be purged: fix the page first, which makes a new current revision.
+ */
+export async function purgeRevision(pageId: number, revisionId: number, admin: SessionUser): Promise<void> {
+  if (admin.role !== 'admin') throw forbidden('Admins only');
+  await db.transaction(async (tx) => {
+    const [p] = await tx.select().from(pages).where(eq(pages.id, pageId)).for('update');
+    if (!p) throw notFound('Page not found');
+    const [rev] = await tx.select({ id: revisions.id }).from(revisions)
+      .where(and(eq(revisions.id, revisionId), eq(revisions.pageId, pageId)));
+    if (!rev) throw notFound('Revision not found');
+    if (rev.id === p.currentRevisionId) {
+      throw badRequest('This is the current version. Edit the page to remove the content first, then purge this revision.');
+    }
+    await tx.delete(revisions).where(eq(revisions.id, revisionId));
   });
 }

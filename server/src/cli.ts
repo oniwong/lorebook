@@ -5,6 +5,8 @@ import { db, pool, runMigrations } from './db/index.js';
 import { users } from './db/schema.js';
 import { hashPassword, validatePassword } from './lib/passwords.js';
 import { runNightly } from './lib/jobs.js';
+import { reindexPending } from './lib/search.js';
+import { rescanAll } from './routes/secrets.js';
 
 function usage(): never {
   console.log(`Usage: lorebook <command>
@@ -15,7 +17,11 @@ Commands:
   migrate
       Apply database migrations.
   nightly
-      Run the nightly jobs now: purge trash older than 30 days, delete unreferenced attachment files.`);
+      Run the nightly jobs now: purge trash older than 30 days, delete unreferenced attachment files.
+  reindex
+      Rebuild the search index for every page and text attachment.
+  rescan-secrets
+      Re-scan every revision and text attachment with the current secret detection rules.`);
   process.exit(1);
 }
 
@@ -80,6 +86,23 @@ async function main() {
       await runMigrations();
       const r = await runNightly();
       console.log(`Purged ${r.trash.pages} page(s) from the trash; removed ${r.attachmentsGc.removed} unreferenced file(s) (${Math.round(r.attachmentsGc.bytes / 1024)} KB).`);
+    }
+    else if (cmd === 'reindex') {
+      await runMigrations();
+      await db.execute(sql`update pages set search_version = 0`);
+      await db.execute(sql`update attachments set text_extracted = false`);
+      let total = { pages: 0, attachments: 0 };
+      for (;;) {
+        const r = await reindexPending(undefined, 50);
+        total = { pages: total.pages + r.pages, attachments: total.attachments + r.attachments };
+        if (!r.pages && !r.attachments) break;
+      }
+      console.log(`Indexed ${total.pages} page(s) and ${total.attachments} attachment(s).`);
+    }
+    else if (cmd === 'rescan-secrets') {
+      await runMigrations();
+      const r = await rescanAll();
+      console.log(`Scanned ${r.revisions} revision(s) and ${r.attachments} attachment(s); ${r.flagged} revision(s) flagged.`);
     }
     else usage();
   } catch (e) {

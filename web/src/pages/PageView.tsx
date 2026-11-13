@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, formatDateTime, formatTime, pagePath, timeAgo, type Page, type PageRef } from '../lib/api';
+import { api, formatDateTime, formatDay, formatTime, pagePath, timeAgo, type Page, type PageRef } from '../lib/api';
 import { useUser } from '../lib/session';
 import type { Heading } from '../lib/markdown';
 import { MarkdownView } from '../components/MarkdownView';
@@ -10,6 +10,10 @@ import { NewPageDialog } from '../components/NewPageDialog';
 import { AttachmentsPanel } from '../components/AttachmentsPanel';
 import { MoveDialog } from '../components/MoveDialog';
 import { DeleteDialog } from '../components/DeleteDialog';
+import { TagEditor } from '../components/TagEditor';
+import { ReviewBadge } from '../components/ReviewBadge';
+import { ReviewDialog } from '../components/ReviewDialog';
+import { SecretFindings } from '../components/SecretFindings';
 
 export function PageView() {
   const { key, id, slug } = useParams();
@@ -20,7 +24,8 @@ export function PageView() {
   const [headings, setHeadings] = useState<Heading[]>([]);
   const [newChild, setNewChild] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [dialog, setDialog] = useState<'move' | 'delete' | null>(null);
+  const [dialog, setDialog] = useState<'move' | 'delete' | 'review' | null>(null);
+  const [showFindings, setShowFindings] = useState(false);
   const q = useQuery({ queryKey: ['page', pageId], queryFn: () => api.get<Page>(`/pages/${pageId}`), refetchInterval: 30_000 });
   const backlinks = useQuery({
     queryKey: ['backlinks', pageId],
@@ -38,6 +43,8 @@ export function PageView() {
 
   const co = page.checkout;
   const lockedByOther = co && !co.mine;
+  const canReview = page.owner.id === user.id || user.role === 'admin';
+  const review = page.review;
 
   const breakCheckout = async () => {
     if (!confirm(`Break ${co!.displayName}'s check-out? Their draft is kept for them.`)) return;
@@ -94,6 +101,24 @@ export function PageView() {
           </div>
         )}
 
+        {review.status === 'overdue' && (
+          <div className="banner warn">
+            <strong>Needs review</strong> — last reviewed {formatDay(review.lastReviewedAt.slice(0, 10))}
+            {review.reviewBy && <>, review was due {formatDay(review.reviewBy)}</>}.
+            {canReview
+              ? <button className="link-btn" onClick={() => setDialog('review')}>Review it now</button>
+              : <> Ask {page.owner.displayName}{!page.owner.active && ' (former user)'} or suggest changes.</>}
+          </div>
+        )}
+        {page.secretFindings.length > 0 && (
+          <div className="banner danger">
+            This page looks like it contains {page.secretFindings.length === 1 ? 'a password or key' : `${page.secretFindings.length} passwords or keys`}.
+            Store secrets in the password vault and link to the entry instead.{' '}
+            <button className="link-btn" onClick={() => setShowFindings((v) => !v)}>{showFindings ? 'Hide' : 'Show where'}</button>
+            {showFindings && <SecretFindings findings={page.secretFindings} />}
+          </div>
+        )}
+
         <header className="page-head">
           <h1>{page.title}</h1>
           <div className="page-actions">
@@ -112,7 +137,10 @@ export function PageView() {
         <div className="page-meta muted small">
           {page.template !== 'blank' && <span className="badge template-badge" title={page.templateInfo.requiredSections.length ? `Required sections: ${page.templateInfo.requiredSections.join(', ')}` : undefined}>{page.templateInfo.name}</span>}{' '}
           Owner {page.owner.displayName}{!page.owner.active && ' (former user)'} · Updated {formatDateTime(page.updatedAt)} by {page.updatedBy.displayName}
+          {' '}<ReviewBadge status={review.status} reviewBy={review.reviewBy} />
+          {canReview && <button className="link-btn small" onClick={() => setDialog('review')}>{review.reviewBy ? 'Review…' : 'Set review date'}</button>}
         </div>
+        <TagEditor key={page.tags.join(',')} pageId={page.id} tags={page.tags} readOnlyReason={lockedByOther ? `Checked out by ${co!.displayName}` : undefined} />
 
         {page.body.trim()
           ? <MarkdownView source={page.body} onHeadings={setHeadings} />
@@ -145,6 +173,7 @@ export function PageView() {
       )}
       {dialog === 'move' && <MoveDialog page={page} onClose={() => setDialog(null)} />}
       {dialog === 'delete' && <DeleteDialog page={page} onClose={() => setDialog(null)} />}
+      {dialog === 'review' && <ReviewDialog page={page} onClose={() => setDialog(null)} />}
       {newChild && <NewPageDialog spaceKey={page.spaceKey} parentId={page.id} parentTitle={page.title} onClose={() => setNewChild(false)} />}
     </div>
   );

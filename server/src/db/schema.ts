@@ -1,7 +1,14 @@
 import { sql } from 'drizzle-orm';
 import {
-  pgTable, serial, integer, bigint, text, timestamp, boolean, jsonb, primaryKey, index, uniqueIndex, type AnyPgColumn,
+  pgTable, serial, integer, bigint, text, timestamp, boolean, jsonb, primaryKey, index, uniqueIndex, date, customType,
+  type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
+
+/** Postgres full-text vector. Written with SQL (see lib/search.ts), never read back into JS. */
+const tsvector = customType<{ data: string }>({ dataType: () => 'tsvector' });
+
+/** Masked secret-scan findings (see lib/secrets.ts). Never contains the secret itself. */
+export type StoredFinding = { ruleId: string; ruleName: string; line: number; preview: string };
 
 export const users = pgTable('users', {
   id: serial('id').primaryKey(),
@@ -54,6 +61,17 @@ export const pages = pgTable('pages', {
   deletedBy: integer('deleted_by').references(() => users.id),
   // The page the user actually deleted; its whole subtree shares this id and is restored together.
   trashRootId: integer('trash_root_id'),
+  tags: text('tags').array().notNull().default(sql`'{}'::text[]`),
+  // Review dates (spec §11). review_by is a calendar date; null means the page is never due.
+  reviewBy: date('review_by'),
+  reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
+  reviewedBy: integer('reviewed_by').references(() => users.id),
+  // Search index (spec §9), maintained by lib/search.ts on every change.
+  searchTsv: tsvector('search_tsv'),
+  // lower(unaccent(title, headings, tags, body)) for trigram substring matching
+  searchBlob: text('search_blob'),
+  searchCode: text('search_code'),
+  searchVersion: integer('search_version').notNull().default(0),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   createdBy: integer('created_by').notNull().references(() => users.id),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -62,6 +80,12 @@ export const pages = pgTable('pages', {
   index('pages_space_parent_idx').on(t.spaceId, t.parentId, t.position),
   index('pages_updated_idx').on(t.updatedAt),
   index('pages_trash_root_idx').on(t.trashRootId),
+  index('pages_tags_idx').using('gin', t.tags),
+  index('pages_review_by_idx').on(t.reviewBy),
+  index('pages_search_tsv_idx').using('gin', t.searchTsv),
+  index('pages_search_blob_trgm_idx').using('gin', sql`${t.searchBlob} gin_trgm_ops`),
+  index('pages_search_code_trgm_idx').using('gin', sql`${t.searchCode} gin_trgm_ops`),
+  index('pages_title_trgm_idx').using('gin', sql`lower(${t.title}) gin_trgm_ops`),
 ]);
 
 export const revisions = pgTable('revisions', {
@@ -73,6 +97,10 @@ export const revisions = pgTable('revisions', {
   kind: text('kind', { enum: ['create', 'checkin', 'restore'] }).notNull(),
   message: text('message').notNull().default(''),
   restoredFrom: integer('restored_from'),
+  // Possible secrets found when the revision was written; empty or null when clean.
+  secretFindings: jsonb('secret_findings').$type<StoredFinding[]>(),
+  // The author saw the secret warning and chose "Save anyway".
+  secretsAcknowledged: boolean('secrets_acknowledged').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [index('revisions_page_idx').on(t.pageId, t.id)]);
 
@@ -114,7 +142,17 @@ export const attachments = pgTable('attachments', {
   // Removed from the page's list. The row (and file) stays so old revisions that link to it still work.
   removedAt: timestamp('removed_at', { withTimezone: true }),
   removedBy: integer('removed_by').references(() => users.id),
-}, (t) => [index('attachments_page_idx').on(t.pageId), index('attachments_sha_idx').on(t.sha256)]);
+  // Text files under 5 MB are indexed for search and scanned for secrets (spec §7).
+  textExtracted: boolean('text_extracted').notNull().default(false),
+  searchBlob: text('search_blob'),
+  searchTsv: tsvector('search_tsv'),
+  secretFindings: jsonb('secret_findings').$type<StoredFinding[]>(),
+}, (t) => [
+  index('attachments_page_idx').on(t.pageId),
+  index('attachments_sha_idx').on(t.sha256),
+  index('attachments_search_tsv_idx').using('gin', t.searchTsv),
+  index('attachments_search_blob_trgm_idx').using('gin', sql`${t.searchBlob} gin_trgm_ops`),
+]);
 
 /** Internal links between pages, extracted from the current body on every save. */
 export const pageLinks = pgTable('page_links', {

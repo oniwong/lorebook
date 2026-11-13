@@ -107,7 +107,20 @@ export type Page = {
   checkout: { userId: number; displayName: string; since: string; mine: boolean } | null;
   myDraft: { updatedAt: string; status: string } | null;
   breadcrumbs: { id: number; title: string; slug: string }[];
+  tags: string[];
+  review: {
+    reviewBy: string | null;
+    status: ReviewStatus;
+    lastReviewedAt: string;
+    reviewedBy: { id: number; displayName: string } | null;
+  };
+  secretFindings: StoredFinding[];
 };
+
+export type ReviewStatus = 'none' | 'ok' | 'due' | 'overdue';
+
+/** A masked secret-scan finding as stored on revisions and attachments. */
+export type StoredFinding = { ruleId: string; ruleName: string; line: number; preview: string };
 
 export type Draft = {
   pageId: number;
@@ -127,6 +140,8 @@ export type RevisionSummary = {
   restoredFrom: number | null;
   createdAt: string;
   author: { id: number; displayName: string };
+  secretFindings: StoredFinding[] | null;
+  secretsAcknowledged: boolean;
 };
 
 export type Revision = RevisionSummary & { pageId: number; body: string };
@@ -154,6 +169,9 @@ export type Attachment = {
   url: string;
   isImage: boolean;
   isText: boolean;
+  secretFindings: StoredFinding[];
+  /** Only on the upload response. */
+  warnings?: StoredFinding[];
 };
 
 export type PageRef = { id: number; title: string; slug: string; spaceKey: string; spaceName: string };
@@ -172,7 +190,47 @@ export type TrashItem = {
   purgeAt: string;
 };
 
-export type AppSettings = { uploadMaxMb: number | null };
+export type AppSettings = { uploadMaxMb: number | null; searchLanguage: string; defaultReviewMonths: number };
+
+export type Snippet = { text: string; highlights: [number, number][] };
+
+export type SearchHit = {
+  id: number;
+  title: string;
+  slug: string;
+  spaceKey: string;
+  spaceName: string;
+  path: string[];
+  owner: { id: number; displayName: string; active: boolean };
+  updatedAt: string;
+  template: string;
+  tags: string[];
+  reviewBy: string | null;
+  titleHighlights: [number, number][];
+  snippet: Snippet | null;
+  attachments: { filename: string; snippet: Snippet | null }[];
+};
+
+export type SearchResult = { total: number; hits: SearchHit[]; tookMs: number };
+
+export type StaleRow = {
+  id: number; title: string; slug: string; spaceKey: string; spaceName: string; template: string;
+  reviewBy: string; status: ReviewStatus; lastReviewedAt: string; reviewedByName: string | null; updatedAt: string;
+  owner: { id: number; displayName: string; active: boolean };
+};
+
+export type DirectoryUser = { id: number; displayName: string; active: boolean };
+
+/** Formats a YYYY-MM-DD date for display without shifting it through a time zone. */
+export function formatDay(d: string): string {
+  const [y, m, day] = d.split('-').map(Number);
+  return new Date(y, m - 1, day).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+export function todayIso(): string {
+  const n = new Date();
+  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
+}
 
 export function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
